@@ -7,9 +7,9 @@
 Gemini plans and researches. Claude Code executes. Everything is observed, verified, and
 recorded from one glassy dashboard — with optional token compression and fully-offline RAG.
 
+[![CI](https://github.com/pillarwheel/wheelhouse/actions/workflows/ci.yml/badge.svg)](https://github.com/pillarwheel/wheelhouse/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-22e3d6.svg)](LICENSE)
 [![.NET 8](https://img.shields.io/badge/.NET-8.0-512BD4.svg)](https://dotnet.microsoft.com/)
-[![Tests](https://img.shields.io/badge/tests-54%20passing-34d399.svg)](#testing)
 
 </div>
 
