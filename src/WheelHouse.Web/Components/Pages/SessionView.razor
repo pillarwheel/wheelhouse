@@ -48,6 +48,17 @@ else
         </div>
     </header>
 
+    <section class="pipeline">
+        @foreach (var stage in PipelineStages())
+        {
+            <div class="pipe-node state-@stage.State.ToString().ToLower()">
+                <div class="pipe-dot">@(stage.State == StageState.Done ? "✓" : "")</div>
+                <div class="pipe-label">@stage.Label</div>
+                <div class="pipe-sub">@stage.Sub</div>
+            </div>
+        }
+    </section>
+
     <section class="split">
         <div class="panel plan-panel">
             <div class="panel-head"><h2>Gemini · Research &amp; Plan</h2></div>
@@ -301,6 +312,27 @@ else
     }
 
     private static string Trim(string s) => s.Length > 80 ? s[..80] + "…" : s;
+
+    private enum StageState { Pending, Active, Done }
+    private record Stage(string Label, string Sub, StageState State);
+
+    private IEnumerable<Stage> PipelineStages()
+    {
+        var hasPlan = !string.IsNullOrWhiteSpace(_session?.PlanningContext);
+        var hasTasks = _tasks.Count > 0;
+        var anyCompleted = _tasks.Any(t => t.Status == WorkItemStatus.Completed);
+        var anyVerifying = _tasks.Any(t => t.Status == WorkItemStatus.Verifying);
+        var sessionDone = _session?.Status == SessionStatus.Completed;
+
+        yield return new Stage("Plan", "Gemini",
+            _planning ? StageState.Active : hasPlan ? StageState.Done : StageState.Pending);
+        yield return new Stage("Tasks", "checklist",
+            _generatingTasks ? StageState.Active : hasTasks ? StageState.Done : StageState.Pending);
+        yield return new Stage("Execute", "Claude",
+            _running ? StageState.Active : (anyCompleted || sessionDone) ? StageState.Done : StageState.Pending);
+        yield return new Stage("Verify", "tests",
+            anyVerifying ? StageState.Active : anyCompleted ? StageState.Done : StageState.Pending);
+    }
 
     private void Emit(AgentStreamEvent e)
     {

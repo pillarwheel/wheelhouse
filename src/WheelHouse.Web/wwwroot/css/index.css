@@ -214,6 +214,39 @@ textarea.input { resize: vertical; font-family: inherit; }
 .line-result .line-text { color: var(--green); }
 .line.err .line-text, .line-error .line-text { color: var(--red); }
 
+/* ---------- Pipeline canvas ---------- */
+.pipeline {
+    display: flex; align-items: flex-start; gap: 0;
+    margin: 0 0 22px; padding: 18px 24px;
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: var(--radius); box-shadow: var(--shadow); backdrop-filter: blur(14px);
+}
+.pipe-node { flex: 1; display: flex; flex-direction: column; align-items: center; position: relative; text-align: center; }
+.pipe-node:not(:last-child)::after {
+    content: ''; position: absolute; top: 13px;
+    left: calc(50% + 18px); right: calc(-50% + 18px); height: 2px;
+    background: var(--border-strong);
+}
+.pipe-node.state-done:not(:last-child)::after { background: var(--green); }
+.pipe-dot {
+    width: 28px; height: 28px; border-radius: 50%;
+    border: 2px solid var(--border-strong); background: var(--bg);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; font-weight: 700; color: var(--muted); z-index: 1;
+}
+.pipe-label { margin-top: 8px; font-weight: 600; font-size: 13px; }
+.pipe-sub { font-size: 11px; color: var(--muted); }
+.state-active .pipe-dot {
+    border-color: var(--cyan); color: var(--cyan);
+    animation: pipe-pulse 1.5s ease-in-out infinite;
+}
+.state-active .pipe-label { color: var(--cyan); }
+.state-done .pipe-dot { border-color: var(--green); color: var(--green); background: rgba(52, 211, 153, 0.14); }
+@keyframes pipe-pulse {
+    0%, 100% { box-shadow: 0 0 0 4px rgba(34, 227, 214, 0.18); }
+    50% { box-shadow: 0 0 0 8px rgba(34, 227, 214, 0.04); }
+}
+
 /* ---------- Git bar ---------- */
 .git-bar {
     display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
