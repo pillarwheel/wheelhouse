@@ -43,4 +43,45 @@ public class CodeCompressionServiceTests
         var result = _sut.Compress(input);
         Assert.Equal("a;\nb;", result);
     }
+
+    [Theory]
+    [InlineData("app.ts")]
+    [InlineData("comp.tsx")]
+    [InlineData("util.js")]
+    [InlineData("main.go")]
+    public void CompressForFile_Strips_CStyle_Comments_For_Web_And_Backend(string file)
+    {
+        var input = "const x = 1; // inline\n/* block */ const y = 2;";
+        var result = _sut.CompressForFile(input, file);
+        Assert.DoesNotContain("inline", result);
+        Assert.DoesNotContain("block", result);
+        Assert.Contains("const x = 1;", result);
+        Assert.Contains("const y = 2;", result);
+    }
+
+    [Fact]
+    public void CompressForFile_Strips_Hash_Comments_For_Python()
+    {
+        var input = "x = 1  # set x\ny = 2";
+        var result = _sut.CompressForFile(input, "script.py");
+        Assert.DoesNotContain("set x", result);
+        Assert.Contains("x = 1", result);
+        Assert.Contains("y = 2", result);
+    }
+
+    [Fact]
+    public void CompressForFile_Keeps_Hash_Inside_Python_Strings()
+    {
+        var input = "channel = \"#general\"  # a comment";
+        var result = _sut.CompressForFile(input, "bot.py");
+        Assert.Contains("#general", result);
+        Assert.DoesNotContain("a comment", result);
+    }
+
+    [Fact]
+    public void CompressForFile_Leaves_Unknown_Extensions_Unchanged()
+    {
+        var input = "# heading\n\nsome text";
+        Assert.Equal(input, _sut.CompressForFile(input, "README.md"));
+    }
 }

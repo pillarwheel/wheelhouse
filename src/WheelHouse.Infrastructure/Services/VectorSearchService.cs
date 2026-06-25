@@ -45,9 +45,7 @@ public class VectorSearchService : IVectorSearchService
         var raw = await File.ReadAllTextAsync(filePath, cancellationToken);
         if (string.IsNullOrWhiteSpace(raw)) return 0;
 
-        var snippet = filePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase)
-            ? _compression.Compress(raw)
-            : raw;
+        var snippet = _compression.CompressForFile(raw, filePath);
         if (snippet.Length > 8000) snippet = snippet[..8000];
 
         var embedding = await _embeddings.EmbedAsync(snippet, cancellationToken);
