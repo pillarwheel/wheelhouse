@@ -38,6 +38,11 @@ else
         </div>
         <div class="head-actions">
             <span class="status status-@_session.Status.ToString().ToLower()">@_session.Status</span>
+            @if (_savedPath is not null)
+            {
+                <span class="tag" title="@_savedPath">saved to @SessionArchive.RelativePath(_session.Id)</span>
+            }
+            <button class="btn ghost" @onclick="SaveToWorkspace">Save to workspace</button>
             <button class="btn ghost" @onclick="ExportMarkdown">Export MD</button>
         </div>
     </header>
@@ -200,6 +205,7 @@ else
     private bool _editingName;
     private string _nameDraft = "";
     private int _ragSnippetCount;
+    private string? _savedPath;
     private readonly List<AgentStreamEvent> _events = new();
     private readonly List<AgentStreamEvent> _pending = new();
     private int? _currentTaskId;
@@ -309,6 +315,13 @@ else
         var export = await SessionExport.BuildAsync(db, _session.Id);
         if (export is { } e)
             await JS.InvokeVoidAsync("wheelhouseDownload", e.Filename, e.Markdown);
+    }
+
+    private async Task SaveToWorkspace()
+    {
+        if (_session is null) return;
+        await using var db = await DbFactory.CreateDbContextAsync();
+        _savedPath = await SessionExport.SaveToWorkspaceAsync(db, _session.Id, _session.RepositoryPath);
     }
 
     private async Task GeneratePlan()

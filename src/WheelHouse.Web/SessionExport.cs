@@ -22,4 +22,21 @@ public static class SessionExport
         var safeName = new string(session.Name.Select(c => char.IsLetterOrDigit(c) ? c : '-').ToArray());
         return ($"wheelhouse-session-{sessionId}-{safeName}.md", markdown);
     }
+
+    /// <summary>
+    /// Writes the session's Markdown report into the repository at
+    /// <c>.wheelhouse/sessions/&lt;id&gt;.md</c> (GitOps). Returns the path written, or null if the
+    /// session no longer exists.
+    /// </summary>
+    public static async Task<string?> SaveToWorkspaceAsync(
+        WheelHouseDbContext db, int sessionId, string repositoryPath)
+    {
+        var export = await BuildAsync(db, sessionId);
+        if (export is not { } e) return null;
+
+        var path = SessionArchive.FullPath(repositoryPath, sessionId);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        await File.WriteAllTextAsync(path, e.Markdown);
+        return path;
+    }
 }
