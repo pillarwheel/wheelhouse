@@ -1,0 +1,22 @@
+bin/
+obj/
+*.user
+.vs/
+*.db
+*.db-shm
+*.db-wal
+[Tt]humbs.db
+.idea/
+
+# Secrets / API keys — NEVER commit. Keep only .env.example (no real values).
+.env
+.env.*
+*.env
+!.env.example
+secrets.json
+appsettings.*.Local.json
+*.key
+*.pem
+
+# Local Claude Code settings (personal allowlist); launch.json is shared
+.claude/settings.local.json

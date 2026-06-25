@@ -1,0 +1,187 @@
+@page "/sessions"
+@inject IDbContextFactory<WheelHouseDbContext> DbFactory
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+
+<PageTitle>WheelHouse — Session History</PageTitle>
+
+<header class="page-head">
+    <div>
+        <h1>Session History</h1>
+        <p class="muted">Every orchestration session — reopen one to review its plan, tasks and transcript.</p>
+    </div>
+</header>
+
+<section class="panel">
+    <div class="row">
+        <select class="input" @bind="_wsFilter">
+            <option value="">All workspaces</option>
+            @foreach (var w in _workspaces)
+            {
+                <option value="@w.Id">@w.Name</option>
+            }
+        </select>
+        <select class="input" @bind="_statusFilter">
+            <option value="">All statuses</option>
+            @foreach (var s in Enum.GetValues<SessionStatus>())
+            {
+                <option value="@s">@s</option>
+            }
+        </select>
+        <span class="pill">@Filtered.Count() / @_rows.Count</span>
+    </div>
+
+    @if (_rows.Count == 0)
+    {
+        <p class="muted">No sessions yet. Start one from the dashboard.</p>
+    }
+    else if (!Filtered.Any())
+    {
+        <p class="muted">No sessions match the current filters.</p>
+    }
+    else
+    {
+        <ul class="card-list">
+            @foreach (var r in Filtered)
+            {
+                <li class="card clickable" @onclick="() => Open(r.Id)">
+                    <div class="card-main">
+                        @if (_editingId == r.Id)
+                        {
+                            <div class="rename-row" @onclick:stopPropagation="true">
+                                <input class="input rename-input" @bind="_nameDraft"
+                                       @onkeydown="e => OnRenameKey(e, r.Id)" />
+                                <button class="btn primary" @onclick:stopPropagation="true"
+                                        @onclick="() => SaveName(r.Id)"
+                                        disabled="@string.IsNullOrWhiteSpace(_nameDraft)">Save</button>
+                                <button class="btn ghost" @onclick:stopPropagation="true"
+                                        @onclick="() => _editingId = null">Cancel</button>
+                            </div>
+                        }
+                        else
+                        {
+                            <div class="card-title">@r.Name</div>
+                        }
+                        <div class="card-sub mono">@r.RepositoryPath</div>
+                        <div class="card-meta">
+                            <span class="tag">@r.WorkspaceName</span>
+                            <span class="tag subtle">@r.DoneCount/@r.TaskCount tasks</span>
+                            <span class="tag subtle">@r.EventCount lines</span>
+                            <span class="tag subtle">@r.CreatedAt.ToLocalTime().ToString("MMM d, HH:mm")</span>
+                            @if (r.CompletedAt is not null)
+                            {
+                                <span class="tag subtle">@FormatDuration(r.CreatedAt, r.CompletedAt.Value)</span>
+                            }
+                        </div>
+                    </div>
+                    <div class="card-actions">
+                        <span class="status status-@r.Status.ToString().ToLower()">@r.Status</span>
+                        <button class="btn ghost" title="Rename"
+                                @onclick:stopPropagation="true" @onclick="() => StartRename(r.Id, r.Name)">✎</button>
+                        <button class="btn ghost" title="Export Markdown"
+                                @onclick:stopPropagation="true" @onclick="() => ExportMarkdown(r.Id)">⤓ MD</button>
+                        <button class="btn ghost" title="Delete session"
+                                @onclick:stopPropagation="true" @onclick="() => Delete(r.Id)">✕</button>
+                        <span class="chevron">›</span>
+                    </div>
+                </li>
+            }
+        </ul>
+    }
+</section>
+
+@code {
+    private List<Row> _rows = new();
+    private List<Workspace> _workspaces = new();
+    private string _wsFilter = "";
+    private string _statusFilter = "";
+    private int? _editingId;
+    private string _nameDraft = "";
+
+    private IEnumerable<Row> Filtered => _rows.Where(r =>
+        (string.IsNullOrEmpty(_wsFilter) || r.WorkspaceId.ToString() == _wsFilter) &&
+        (string.IsNullOrEmpty(_statusFilter) || r.Status.ToString() == _statusFilter));
+
+    protected override async Task OnInitializedAsync() => await Load();
+
+    private async Task Load()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        _workspaces = await db.Workspaces.OrderBy(w => w.Name).ToListAsync();
+        _rows = await db.Sessions
+            .OrderByDescending(s => s.CreatedAt)
+            .Select(s => new Row(
+                s.Id,
+                s.Name,
+                s.Status,
+                s.CreatedAt,
+                s.CompletedAt,
+                s.RepositoryPath,
+                s.WorkspaceId,
+                s.Workspace != null ? s.Workspace.Name : "—",
+                s.Tasks.Count,
+                s.Tasks.Count(t => t.Status == WorkItemStatus.Completed),
+                s.Events.Count))
+            .ToListAsync();
+    }
+
+    private void Open(int id) => Nav.NavigateTo($"/session/{id}");
+
+    private void StartRename(int id, string name)
+    {
+        _editingId = id;
+        _nameDraft = name;
+    }
+
+    private async Task OnRenameKey(KeyboardEventArgs e, int id)
+    {
+        if (e.Key == "Enter") await SaveName(id);
+        else if (e.Key == "Escape") _editingId = null;
+    }
+
+    private async Task SaveName(int id)
+    {
+        var name = _nameDraft.Trim();
+        if (name.Length == 0) return;
+
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var session = await db.Sessions.FindAsync(id);
+        if (session is not null) { session.Name = name; await db.SaveChangesAsync(); }
+        _editingId = null;
+        await Load();
+    }
+
+    private async Task ExportMarkdown(int id)
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var export = await SessionExport.BuildAsync(db, id);
+        if (export is { } e)
+            await JS.InvokeVoidAsync("wheelhouseDownload", e.Filename, e.Markdown);
+    }
+
+    private async Task Delete(int id)
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var s = await db.Sessions.FindAsync(id);
+        if (s is not null)
+        {
+            db.Sessions.Remove(s); // cascades to tasks + transcript
+            await db.SaveChangesAsync();
+        }
+        await Load();
+    }
+
+    private static string FormatDuration(DateTime start, DateTime end)
+    {
+        var d = end - start;
+        if (d.TotalSeconds < 1) return "0s";
+        if (d.TotalMinutes < 1) return $"{d.Seconds}s";
+        if (d.TotalHours < 1) return $"{d.Minutes}m {d.Seconds}s";
+        return $"{(int)d.TotalHours}h {d.Minutes}m";
+    }
+
+    private record Row(
+        int Id, string Name, SessionStatus Status, DateTime CreatedAt, DateTime? CompletedAt,
+        string RepositoryPath, int WorkspaceId, string WorkspaceName,
+        int TaskCount, int DoneCount, int EventCount);
+}

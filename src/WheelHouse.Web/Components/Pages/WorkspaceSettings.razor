@@ -1,0 +1,165 @@
+@page "/workspace/{Id:int}"
+@inject IDbContextFactory<WheelHouseDbContext> DbFactory
+@inject WheelHouse.Infrastructure.Services.WorkspaceConfigService ConfigService
+@inject NavigationManager Nav
+
+<PageTitle>WheelHouse — Workspace Settings</PageTitle>
+
+@if (_workspace is null)
+{
+    <div class="empty-state"><h1>Workspace not found</h1><a href="/">Back to dashboard</a></div>
+}
+else
+{
+    <header class="page-head">
+        <div>
+            <h1>@_workspace.Name</h1>
+            <p class="muted mono">@_workspace.AbsolutePath</p>
+        </div>
+        <button class="btn ghost" @onclick="SyncYaml">Sync .wheelhouse/config.yaml</button>
+    </header>
+
+    <section class="grid two-col">
+        <div class="panel">
+            <div class="panel-head"><h2>Claude permissions</h2></div>
+            <p class="muted">How Claude is allowed to act when running tasks in this workspace.</p>
+            <label class="field">
+                <span class="field-name">Permission mode</span>
+                <select class="input" @bind="_workspace.PermissionMode">
+                    <option value="acceptEdits">acceptEdits — auto-apply file edits (recommended)</option>
+                    <option value="default">default — prompt for everything (limited in headless runs)</option>
+                    <option value="bypassPermissions">bypassPermissions — allow everything (use with care)</option>
+                </select>
+            </label>
+            <div class="row">
+                <button class="btn primary" @onclick="SavePermissionMode">Save</button>
+                @if (_savedMode)
+                {
+                    <span class="tag">saved</span>
+                }
+            </div>
+            <p class="muted small">
+                Bash commands stay gated by the auto-approve rules below: approved rules become Claude
+                <code>--allowedTools</code> patterns; denied rules become <code>--disallowedTools</code>.
+            </p>
+        </div>
+
+        <div class="panel">
+            <div class="panel-head">
+                <h2>Auto-approve rules</h2>
+                <span class="pill">@_rules.Count</span>
+            </div>
+
+            @if (_rules.Count == 0)
+            {
+                <p class="muted">No rules. Claude will follow the permission mode for Bash commands.</p>
+            }
+            else
+            {
+                <ul class="card-list">
+                    @foreach (var r in _rules)
+                    {
+                        <li class="card">
+                            <div class="card-main">
+                                <div class="card-title mono">@r.Pattern</div>
+                                <div class="card-meta">
+                                    <span class="tag subtle">@r.MatchType</span>
+                                    <span class="tag @(r.Action == RuleAction.AutoApprove ? "" : "warn")">@r.Action</span>
+                                </div>
+                            </div>
+                            <button class="btn ghost" @onclick="() => DeleteRule(r.Id)">✕</button>
+                        </li>
+                    }
+                </ul>
+            }
+
+            <div class="add-form">
+                <h3>Add rule</h3>
+                <input class="input mono" placeholder="Command pattern, e.g. dotnet test" @bind="_newPattern" />
+                <div class="row">
+                    <select class="input" @bind="_newMatch">
+                        @foreach (var m in Enum.GetValues<RuleMatchType>())
+                        {
+                            <option value="@m">@m</option>
+                        }
+                    </select>
+                    <select class="input" @bind="_newAction">
+                        @foreach (var a in Enum.GetValues<RuleAction>())
+                        {
+                            <option value="@a">@a</option>
+                        }
+                    </select>
+                </div>
+                <button class="btn primary" @onclick="AddRule" disabled="@string.IsNullOrWhiteSpace(_newPattern)">Add rule</button>
+            </div>
+        </div>
+    </section>
+}
+
+@code {
+    [Parameter] public int Id { get; set; }
+
+    private Workspace? _workspace;
+    private List<CommandRule> _rules = new();
+    private string _newPattern = "";
+    private RuleMatchType _newMatch = RuleMatchType.Prefix;
+    private RuleAction _newAction = RuleAction.AutoApprove;
+    private bool _savedMode;
+
+    protected override async Task OnInitializedAsync() => await Load();
+
+    private async Task Load()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        _workspace = await db.Workspaces.FirstOrDefaultAsync(w => w.Id == Id);
+        if (_workspace is not null && string.IsNullOrWhiteSpace(_workspace.PermissionMode))
+            _workspace.PermissionMode = "acceptEdits";
+        _rules = await db.CommandRules.Where(r => r.WorkspaceId == Id)
+            .OrderBy(r => r.Pattern).ToListAsync();
+    }
+
+    private async Task SavePermissionMode()
+    {
+        if (_workspace is null) return;
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var tracked = await db.Workspaces.FindAsync(_workspace.Id);
+        if (tracked is not null)
+        {
+            tracked.PermissionMode = _workspace.PermissionMode;
+            await db.SaveChangesAsync();
+            _savedMode = true;
+        }
+    }
+
+    private async Task AddRule()
+    {
+        if (_workspace is null || string.IsNullOrWhiteSpace(_newPattern)) return;
+        await using var db = await DbFactory.CreateDbContextAsync();
+        db.CommandRules.Add(new CommandRule
+        {
+            WorkspaceId = _workspace.Id,
+            Pattern = _newPattern.Trim(),
+            MatchType = _newMatch,
+            Action = _newAction
+        });
+        await db.SaveChangesAsync();
+        _newPattern = "";
+        await Load();
+    }
+
+    private async Task DeleteRule(int ruleId)
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var rule = await db.CommandRules.FindAsync(ruleId);
+        if (rule is not null) { db.CommandRules.Remove(rule); await db.SaveChangesAsync(); }
+        await Load();
+    }
+
+    private async Task SyncYaml()
+    {
+        if (_workspace is null) return;
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var ws = await db.Workspaces.Include(w => w.CommandRules).FirstOrDefaultAsync(w => w.Id == Id);
+        if (ws is not null) await ConfigService.WriteAsync(ws);
+    }
+}

@@ -1,0 +1,174 @@
+@page "/"
+@using Microsoft.Extensions.DependencyInjection
+@inject IDbContextFactory<WheelHouseDbContext> DbFactory
+@inject WheelHouse.Infrastructure.Services.WorkspaceConfigService ConfigService
+@inject IServiceScopeFactory ScopeFactory
+@inject NavigationManager Nav
+
+<PageTitle>WheelHouse — Dashboard</PageTitle>
+
+<header class="page-head">
+    <div>
+        <h1>Dashboard</h1>
+        <p class="muted">Repositories, sessions and planning logs across your workspaces.</p>
+    </div>
+</header>
+
+<section class="grid two-col">
+    <div class="panel">
+        <div class="panel-head">
+            <h2>Workspaces</h2>
+            <span class="pill">@_workspaces.Count</span>
+        </div>
+
+        @if (_workspaces.Count == 0)
+        {
+            <p class="muted">No repositories yet. Add one to get started.</p>
+        }
+        else
+        {
+            <ul class="card-list">
+                @foreach (var w in _workspaces)
+                {
+                    <li class="card @(w.IsActive ? "active" : "")">
+                        <div class="card-main">
+                            <div class="card-title">@w.Name</div>
+                            <div class="card-sub mono">@w.AbsolutePath</div>
+                            <div class="card-meta">
+                                <span class="tag">@w.DefaultBranch</span>
+                                <span class="tag">@w.Sessions.Count sessions</span>
+                                @if (w.LastSyncedAt is not null)
+                                {
+                                    <span class="tag subtle">synced @w.LastSyncedAt?.ToLocalTime().ToString("g")</span>
+                                }
+                            </div>
+                        </div>
+                        <div class="card-actions">
+                            <a class="btn ghost" href="/workspace/@w.Id">Settings</a>
+                            <button class="btn" @onclick="() => StartSession(w)">New session</button>
+                        </div>
+                    </li>
+                }
+            </ul>
+        }
+
+        <div class="add-form">
+            <h3>Add repository</h3>
+            <input class="input" placeholder="Display name" @bind="_newName" />
+            <input class="input mono" placeholder="g:\Code\my-repo" @bind="_newPath" />
+            <button class="btn primary" @onclick="AddWorkspace" disabled="@(!CanAdd)">Add workspace</button>
+            @if (_error is not null)
+            {
+                <div class="alert">@_error</div>
+            }
+        </div>
+    </div>
+
+    <div class="panel">
+        <div class="panel-head">
+            <h2>Recent sessions</h2>
+            <a class="view-all" href="/sessions">View all →</a>
+        </div>
+
+        @if (_sessions.Count == 0)
+        {
+            <p class="muted">No sessions started yet.</p>
+        }
+        else
+        {
+            <ul class="card-list">
+                @foreach (var s in _sessions)
+                {
+                    <li class="card clickable" @onclick="() => OpenSession(s.Id)">
+                        <div class="card-main">
+                            <div class="card-title">@s.Name</div>
+                            <div class="card-meta">
+                                <span class="status status-@s.Status.ToString().ToLower()">@s.Status</span>
+                                <span class="tag subtle">@s.CreatedAt.ToLocalTime().ToString("g")</span>
+                            </div>
+                        </div>
+                        <div class="card-actions"><span class="chevron">›</span></div>
+                    </li>
+                }
+            </ul>
+        }
+    </div>
+</section>
+
+@code {
+    private List<Workspace> _workspaces = new();
+    private List<AgentSession> _sessions = new();
+    private string _newName = "";
+    private string _newPath = "";
+    private string? _error;
+
+    private bool CanAdd => !string.IsNullOrWhiteSpace(_newName) && !string.IsNullOrWhiteSpace(_newPath);
+
+    protected override async Task OnInitializedAsync() => await Load();
+
+    private async Task Load()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        _workspaces = await db.Workspaces.Include(w => w.Sessions).Include(w => w.CommandRules)
+            .OrderByDescending(w => w.IsActive).ThenBy(w => w.Name).ToListAsync();
+        _sessions = await db.Sessions.OrderByDescending(s => s.CreatedAt).Take(10).ToListAsync();
+    }
+
+    private async Task AddWorkspace()
+    {
+        _error = null;
+        var path = _newPath.Trim();
+        if (!Directory.Exists(path))
+        {
+            _error = $"Path not found: {path}";
+            return;
+        }
+
+        await using var db = await DbFactory.CreateDbContextAsync();
+        if (await db.Workspaces.AnyAsync(w => w.AbsolutePath == path))
+        {
+            _error = "That repository is already registered.";
+            return;
+        }
+
+        await using var scope = ScopeFactory.CreateAsyncScope();
+        var config = await scope.ServiceProvider.GetRequiredService<IAppSettingsService>().GetAsync();
+
+        db.Workspaces.Add(new Workspace
+        {
+            Name = _newName.Trim(),
+            AbsolutePath = path,
+            IsActive = _workspaces.Count == 0,
+            PermissionMode = config.DefaultPermissionMode
+        });
+        await db.SaveChangesAsync();
+        _newName = _newPath = "";
+        await Load();
+    }
+
+    private async Task SyncConfig(Workspace w)
+    {
+        await ConfigService.WriteAsync(w);
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var tracked = await db.Workspaces.FindAsync(w.Id);
+        if (tracked is not null) { tracked.LastSyncedAt = w.LastSyncedAt; await db.SaveChangesAsync(); }
+        await Load();
+    }
+
+    private async Task StartSession(Workspace w)
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var session = new AgentSession
+        {
+            Name = $"Session · {DateTime.Now:MMM d HH:mm}",
+            WorkspaceId = w.Id,
+            RepositoryPath = w.AbsolutePath,
+            Status = SessionStatus.Planning
+        };
+        db.Sessions.Add(session);
+        await db.SaveChangesAsync();
+        OpenSession(session.Id);
+    }
+
+    private void OpenSession(int id) => Nav.NavigateTo($"/session/{id}");
+}

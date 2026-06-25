@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "wheelhouse",
+      "runtimeExecutable": "dotnet",
+      "runtimeArgs": ["run", "--project", "src/WheelHouse.Web", "--no-build", "-c", "Debug", "--", "--urls", "http://127.0.0.1:5230"],
+      "port": 5230
+    }
+  ]
+}

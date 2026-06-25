@@ -1,0 +1,177 @@
+@page "/status"
+@using Microsoft.Extensions.DependencyInjection
+@inject IAgentOrchestrator Orchestrator
+@inject IGeminiService Gemini
+@inject IEmbeddingProvider Embeddings
+@inject IServiceScopeFactory ScopeFactory
+
+<PageTitle>WheelHouse — System Status</PageTitle>
+
+<header class="page-head">
+    <div>
+        <h1>System Status</h1>
+        <p class="muted">Live health of every WheelHouse integration: agents, keys, and RAG backends.</p>
+    </div>
+</header>
+
+<section class="panel">
+    <ul class="card-list">
+        <li class="card">
+            <div class="card-main">
+                <div class="card-title">Claude Code CLI</div>
+                <div class="card-sub mono">@(_agent?.ClaudePath ?? "not found on PATH")</div>
+            </div>
+            <span class="status @(_agent?.ClaudeAvailable == true ? "status-completed" : "status-failed")">
+                @(_agent?.ClaudeAvailable == true ? "available" : "missing")
+            </span>
+        </li>
+
+        <li class="card">
+            <div class="card-main">
+                <div class="card-title">Headroom compression</div>
+                <div class="card-sub mono">@HeadroomDetail()</div>
+            </div>
+            <span class="status @HeadroomStatusClass()">@HeadroomStatusText()</span>
+        </li>
+
+        @if (_agent?.CompressionActive == true)
+        {
+            <li class="help-card">
+                <div class="trouble-head">Seeing <code>401 authentication_failed</code> when Claude runs?</div>
+                <p class="muted">
+                    When Claude Code talks to Headroom's proxy (<code>ANTHROPIC_BASE_URL</code>) it sends credentials as
+                    an <code>Authorization: Bearer</code> header. Anthropic accepts that for a <b>subscription/OAuth login
+                    token</b>, but <b>not</b> for a raw API key (which must use <code>x-api-key</code>). So a bare
+                    <code>ANTHROPIC_API_KEY</code> will 401 through the proxy.
+                </p>
+                <p class="muted"><b>Fix:</b> sign in with a Claude subscription so Claude sends a valid Bearer token, which Headroom forwards:</p>
+                <pre class="plan-text">claude login        # establish a valid subscription/OAuth session</pre>
+                <p class="muted">An API key still works for <b>direct</b> (non-Headroom) use; verify it with:</p>
+                <pre class="plan-text">curl https://api.anthropic.com/v1/messages -H "x-api-key: $ANTHROPIC_API_KEY" \
+  -H "anthropic-version: 2023-06-01" -H "content-type: application/json" \
+  -d '{"model":"claude-sonnet-4-6","max_tokens":8,"messages":[{"role":"user","content":"ok"}]}'</pre>
+            </li>
+        }
+
+        <li class="card">
+            <div class="card-main">
+                <div class="card-title">Gemini API</div>
+                <div class="card-sub">
+                    @(_geminiConfigured ? "Key configured." : "No GEMINI_API_KEY — planning & cloud embeddings disabled.")
+                    @if (_geminiTestResult is not null)
+                    {
+                        <span class="tag @(_geminiTestOk ? "" : "warn")">@_geminiTestResult</span>
+                    }
+                </div>
+            </div>
+            <div class="card-actions">
+                <button class="btn ghost" @onclick="TestGemini" disabled="@(_geminiTesting || !_geminiConfigured)">
+                    @(_geminiTesting ? "Testing…" : "Test")
+                </button>
+                <span class="status @(_geminiConfigured ? "status-completed" : "status-paused")">
+                    @(_geminiConfigured ? "configured" : "off")
+                </span>
+            </div>
+        </li>
+
+        <li class="card">
+            <div class="card-main">
+                <div class="card-title">Embedding backend</div>
+                <div class="card-sub mono">@_embedId · @_embedDims dims</div>
+            </div>
+            <span class="status @(_embedAvailable ? "status-completed" : "status-failed")">
+                @(_embedAvailable ? "ready" : "unavailable")
+            </span>
+        </li>
+
+        <li class="card">
+            <div class="card-main">
+                <div class="card-title">Vector store (RAG)</div>
+                <div class="card-sub mono">@_ragBackend</div>
+            </div>
+            <span class="status status-completed">active</span>
+        </li>
+
+        <li class="card">
+            <div class="card-main">
+                <div class="card-title">Database</div>
+                <div class="card-sub mono">@_dbPath</div>
+            </div>
+            <span class="status status-completed">sqlite</span>
+        </li>
+    </ul>
+</section>
+
+@code {
+    private AgentRuntimeInfo? _agent;
+    private bool _geminiConfigured;
+    private string _embedId = "?";
+    private int _embedDims;
+    private bool _embedAvailable;
+    private string _ragBackend = "…";
+    private string _dbPath = "";
+
+    private bool _geminiTesting;
+    private bool _geminiTestOk;
+    private string? _geminiTestResult;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _agent = await Orchestrator.GetRuntimeInfoAsync();
+        _geminiConfigured = Gemini.IsConfigured;
+        _embedId = Embeddings.Id;
+        _embedDims = Embeddings.Dimensions;
+        _embedAvailable = Embeddings.IsAvailable;
+        _dbPath = WheelHouse.Infrastructure.DependencyInjection.DefaultDatabasePath();
+
+        await using var scope = ScopeFactory.CreateAsyncScope();
+        _ragBackend = scope.ServiceProvider.GetRequiredService<IVectorSearchService>().Backend;
+    }
+
+    private async Task TestGemini()
+    {
+        _geminiTesting = true;
+        _geminiTestResult = null;
+        try
+        {
+            var start = DateTime.UtcNow;
+            var vec = await Gemini.EmbedAsync("WheelHouse status check");
+            var ms = (int)(DateTime.UtcNow - start).TotalMilliseconds;
+            _geminiTestOk = vec.Length > 0;
+            _geminiTestResult = _geminiTestOk ? $"OK · {vec.Length}d · {ms}ms" : "Failed — empty result (check key/model)";
+        }
+        catch (Exception ex)
+        {
+            _geminiTestOk = false;
+            _geminiTestResult = "Error: " + ex.Message;
+        }
+        finally
+        {
+            _geminiTesting = false;
+        }
+    }
+
+    private string HeadroomDetail()
+    {
+        if (_agent is null) return "";
+        if (_agent.HeadroomMode == "off") return "disabled (WHEELHOUSE_HEADROOM=off)";
+        if (_agent.HeadroomAvailable) return _agent.HeadroomPath ?? "found";
+        return "not installed — running claude directly";
+    }
+
+    private string HeadroomStatusText()
+    {
+        if (_agent is null) return "";
+        if (_agent.CompressionActive) return "active";
+        if (_agent.HeadroomMode == "off") return "off";
+        return _agent.HeadroomMode == "on" ? "missing" : "fallback";
+    }
+
+    private string HeadroomStatusClass()
+    {
+        if (_agent is null) return "status-paused";
+        if (_agent.CompressionActive) return "status-completed";
+        if (_agent.HeadroomMode == "on") return "status-failed";
+        return "status-paused";
+    }
+}

@@ -1,0 +1,250 @@
+@page "/templates"
+@using Microsoft.Extensions.DependencyInjection
+@inject IServiceScopeFactory ScopeFactory
+@inject IGeminiService Gemini
+@inject IDbContextFactory<WheelHouseDbContext> DbFactory
+@inject IJSRuntime JS
+@inject NavigationManager Nav
+
+<PageTitle>WheelHouse — Prompt Templates</PageTitle>
+
+<header class="page-head">
+    <div>
+        <h1>Prompt Templates</h1>
+        <p class="muted">Parameterized Gemini R&amp;D prompts. Fill the placeholders, then run or hand off to a session.</p>
+    </div>
+    <button class="btn" @onclick="ToggleCreate">@(_showCreate ? "Cancel" : "+ New template")</button>
+</header>
+
+<section class="grid two-col">
+    <div class="panel">
+        <div class="panel-head">
+            <h2>Library</h2>
+            <span class="pill">@_templates.Count</span>
+        </div>
+
+        @if (_showCreate)
+        {
+            <div class="add-form">
+                <h3>New custom template</h3>
+                <input class="input" placeholder="Name" @bind="_draft.Name" />
+                <input class="input" placeholder="Category" @bind="_draft.Category" />
+                <input class="input" placeholder="Short description" @bind="_draft.Description" />
+                <textarea class="input mono" rows="6" placeholder="Body with {{PLACEHOLDER}} tokens…" @bind="_draft.Body"></textarea>
+                <button class="btn primary" @onclick="CreateTemplate" disabled="@(string.IsNullOrWhiteSpace(_draft.Name) || string.IsNullOrWhiteSpace(_draft.Body))">Save template</button>
+            </div>
+        }
+
+        @foreach (var group in _templates.GroupBy(t => t.Category))
+        {
+            <div class="tmpl-group">
+                <h3>@group.Key</h3>
+                <ul class="card-list">
+                    @foreach (var t in group)
+                    {
+                        <li class="card clickable @(_selected?.Id == t.Id ? "active" : "")" @onclick="() => Select(t)">
+                            <div class="card-main">
+                                <div class="card-title">@t.Name</div>
+                                <div class="card-sub">@t.Description</div>
+                            </div>
+                            <div class="card-actions">
+                                @if (t.IsBuiltIn)
+                                {
+                                    <span class="tag subtle">built-in</span>
+                                }
+                                else
+                                {
+                                    <button class="btn ghost" @onclick:stopPropagation="true" @onclick="() => DeleteTemplate(t)">✕</button>
+                                }
+                            </div>
+                        </li>
+                    }
+                </ul>
+            </div>
+        }
+    </div>
+
+    <div class="panel">
+        @if (_selected is null)
+        {
+            <p class="muted">Select a template to fill it in.</p>
+        }
+        else
+        {
+            <div class="panel-head">
+                <h2>@_selected.Name</h2>
+                <span class="pill">@_placeholders.Count fields</span>
+            </div>
+            <p class="muted">@_selected.Description</p>
+
+            @if (_placeholders.Count == 0)
+            {
+                <p class="muted">No placeholders — this prompt is ready as-is.</p>
+            }
+            else
+            {
+                <div class="fields">
+                    @foreach (var p in _placeholders)
+                    {
+                        <label class="field">
+                            <span class="field-name mono">@p</span>
+                            <textarea class="input mono" rows="2"
+                                      value="@GetValue(p)"
+                                      @oninput="e => SetValue(p, e.Value?.ToString())"></textarea>
+                        </label>
+                    }
+                </div>
+            }
+
+            <h3>Rendered prompt</h3>
+            <pre class="plan-text">@_rendered</pre>
+
+            <div class="row">
+                <button class="btn" @onclick="CopyRendered">Copy</button>
+                <button class="btn primary" @onclick="RunGemini" disabled="@_running">
+                    @(_running ? "Running…" : "Run with Gemini")
+                </button>
+                @if (!Gemini.IsConfigured)
+                {
+                    <span class="tag warn">GEMINI_API_KEY not set</span>
+                }
+            </div>
+
+            <div class="row">
+                <select class="input" @bind="_workspaceId">
+                    <option value="">Select workspace…</option>
+                    @foreach (var w in _workspaces)
+                    {
+                        <option value="@w.Id">@w.Name</option>
+                    }
+                </select>
+                <button class="btn ghost" @onclick="StartSession" disabled="@(_workspaceId is null)">
+                    Use in new session
+                </button>
+            </div>
+
+            @if (_geminiResult is not null)
+            {
+                <h3>Gemini response</h3>
+                <pre class="plan-text">@_geminiResult</pre>
+            }
+        }
+    </div>
+</section>
+
+@code {
+    private List<PromptTemplate> _templates = new();
+    private List<Workspace> _workspaces = new();
+    private PromptTemplate? _selected;
+    private List<string> _placeholders = new();
+    private readonly Dictionary<string, string?> _values = new(StringComparer.Ordinal);
+    private string _rendered = "";
+
+    private bool _showCreate;
+    private PromptTemplate _draft = new() { Category = "Custom" };
+    private bool _running;
+    private string? _geminiResult;
+    private int? _workspaceId;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadTemplates();
+        await using var db = await DbFactory.CreateDbContextAsync();
+        _workspaces = await db.Workspaces.OrderBy(w => w.Name).ToListAsync();
+    }
+
+    private async Task LoadTemplates()
+    {
+        await using var scope = ScopeFactory.CreateAsyncScope();
+        var svc = scope.ServiceProvider.GetRequiredService<IPromptTemplateService>();
+        _templates = (await svc.GetAllAsync()).ToList();
+    }
+
+    private void Select(PromptTemplate t)
+    {
+        _selected = t;
+        _geminiResult = null;
+        _placeholders = PromptRendering.ExtractPlaceholders(t.Body).ToList();
+        _values.Clear();
+        foreach (var p in _placeholders) _values[p] = null;
+        Rerender();
+    }
+
+    private string GetValue(string key) => _values.TryGetValue(key, out var v) ? v ?? "" : "";
+
+    private void SetValue(string key, string? value)
+    {
+        _values[key] = value;
+        Rerender();
+    }
+
+    private void Rerender()
+        => _rendered = _selected is null ? "" : PromptRendering.Render(_selected.Body, _values);
+
+    private async Task CopyRendered()
+    {
+        try { await JS.InvokeVoidAsync("navigator.clipboard.writeText", _rendered); }
+        catch { /* clipboard may be unavailable in some hosts */ }
+    }
+
+    private async Task RunGemini()
+    {
+        if (_running || _selected is null) return;
+        _running = true;
+        try { _geminiResult = await Gemini.CompleteAsync(_rendered); }
+        finally { _running = false; }
+    }
+
+    private async Task StartSession()
+    {
+        if (_workspaceId is null || _selected is null) return;
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var ws = await db.Workspaces.FindAsync(_workspaceId.Value);
+        if (ws is null) return;
+
+        var session = new AgentSession
+        {
+            Name = $"{_selected.Name} · {DateTime.Now:MMM d HH:mm}",
+            WorkspaceId = ws.Id,
+            RepositoryPath = ws.AbsolutePath,
+            Status = SessionStatus.Planning,
+            PlanningContext = _rendered
+        };
+        db.Sessions.Add(session);
+        await db.SaveChangesAsync();
+        Nav.NavigateTo($"/session/{session.Id}");
+    }
+
+    private void ToggleCreate()
+    {
+        _showCreate = !_showCreate;
+        if (_showCreate) _draft = new PromptTemplate { Category = "Custom" };
+    }
+
+    private async Task CreateTemplate()
+    {
+        if (string.IsNullOrWhiteSpace(_draft.Name) || string.IsNullOrWhiteSpace(_draft.Body)) return;
+        await using var scope = ScopeFactory.CreateAsyncScope();
+        var svc = scope.ServiceProvider.GetRequiredService<IPromptTemplateService>();
+        var saved = await svc.SaveAsync(new PromptTemplate
+        {
+            Name = _draft.Name.Trim(),
+            Category = string.IsNullOrWhiteSpace(_draft.Category) ? "Custom" : _draft.Category.Trim(),
+            Description = _draft.Description?.Trim() ?? "",
+            Body = _draft.Body,
+            IsBuiltIn = false
+        });
+        _showCreate = false;
+        await LoadTemplates();
+        Select(_templates.First(t => t.Id == saved.Id));
+    }
+
+    private async Task DeleteTemplate(PromptTemplate t)
+    {
+        await using var scope = ScopeFactory.CreateAsyncScope();
+        var svc = scope.ServiceProvider.GetRequiredService<IPromptTemplateService>();
+        await svc.DeleteAsync(t.Id);
+        if (_selected?.Id == t.Id) _selected = null;
+        await LoadTemplates();
+    }
+}

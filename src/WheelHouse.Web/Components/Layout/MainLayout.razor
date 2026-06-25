@@ -1,0 +1,61 @@
+@inherits LayoutComponentBase
+@using Microsoft.Extensions.DependencyInjection
+@inject IServiceScopeFactory ScopeFactory
+
+<div class="app-shell">
+    <aside class="sidebar">
+        <div class="brand">
+            <span class="brand-mark">◆</span>
+            <div>
+                <div class="brand-name">@_productName</div>
+                <div class="brand-sub">@_companyName</div>
+            </div>
+        </div>
+
+        <nav class="nav">
+            <NavLink class="nav-link" href="/" Match="NavLinkMatch.All">
+                <span class="nav-ico">▦</span> Dashboard
+            </NavLink>
+            <NavLink class="nav-link" href="/sessions">
+                <span class="nav-ico">↺</span> Sessions
+            </NavLink>
+            <NavLink class="nav-link" href="/search">
+                <span class="nav-ico">⌕</span> Code Search
+            </NavLink>
+            <NavLink class="nav-link" href="/transcript-search">
+                <span class="nav-ico">≣</span> Transcript Search
+            </NavLink>
+            <NavLink class="nav-link" href="/templates">
+                <span class="nav-ico">❏</span> Prompt Templates
+            </NavLink>
+            <NavLink class="nav-link" href="/status">
+                <span class="nav-ico">◉</span> System Status
+            </NavLink>
+            <NavLink class="nav-link" href="/settings">
+                <span class="nav-ico">⚙</span> Settings
+            </NavLink>
+        </nav>
+
+        <div class="sidebar-foot">@_tagline</div>
+    </aside>
+
+    <main class="content">
+        @Body
+    </main>
+</div>
+
+@code {
+    private string _productName = "WheelHouse";
+    private string _companyName = "Your Studio";
+    private string _tagline = "Coding research, development & implementation";
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var scope = ScopeFactory.CreateAsyncScope();
+        var settings = scope.ServiceProvider.GetRequiredService<IAppSettingsService>();
+        var config = await settings.GetAsync();
+        _productName = config.ProductName;
+        _companyName = config.CompanyName;
+        _tagline = config.Tagline;
+    }
+}

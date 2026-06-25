@@ -1,0 +1,129 @@
+@page "/search"
+@using Microsoft.Extensions.DependencyInjection
+@inject IServiceScopeFactory ScopeFactory
+@inject IDbContextFactory<WheelHouseDbContext> DbFactory
+
+<PageTitle>WheelHouse — Code Search</PageTitle>
+
+<header class="page-head">
+    <div>
+        <h1>Code Search</h1>
+        <p class="muted">Local semantic RAG across indexed repositories.</p>
+    </div>
+    @if (_backend is not null)
+    {
+        <span class="tag">@_backend</span>
+    }
+</header>
+
+<section class="panel">
+    <div class="row">
+        <select class="input" @bind="_repo">
+            <option value="">All repositories</option>
+            @foreach (var r in _repos)
+            {
+                <option value="@r">@r</option>
+            }
+        </select>
+        <button class="btn ghost" @onclick="IndexSelected" disabled="@(_busy || string.IsNullOrEmpty(_repo))">
+            @(_busy ? "Indexing…" : "Index selected")
+        </button>
+    </div>
+
+    <div class="row">
+        <input class="input grow" placeholder="Describe what you're looking for…" @bind="_query"
+               @bind:event="oninput" @onkeyup="OnKey" />
+        <button class="btn primary" @onclick="RunSearch" disabled="@_busy">Search</button>
+    </div>
+
+    @if (_status is not null)
+    {
+        <div class="alert subtle">@_status</div>
+    }
+
+    <ul class="card-list results">
+        @foreach (var hit in _results)
+        {
+            <li class="card">
+                <div class="card-main">
+                    <div class="card-title mono">@hit.Entry.FilePath</div>
+                    <div class="card-meta">
+                        <span class="tag">@hit.Entry.SymbolKind</span>
+                        <span class="tag subtle">score @hit.Score.ToString("0.000")</span>
+                    </div>
+                    <pre class="snippet">@Trim(hit.Entry.Snippet)</pre>
+                </div>
+            </li>
+        }
+    </ul>
+</section>
+
+@code {
+    private string _query = "";
+    private string _repo = "";
+    private bool _busy;
+    private string? _status;
+    private List<string> _repos = new();
+    private string? _backend;
+    private IReadOnlyList<CodeSearchResult> _results = Array.Empty<CodeSearchResult>();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        _repos = await db.Workspaces.Select(w => w.AbsolutePath).Distinct().ToListAsync();
+
+        await using var scope = ScopeFactory.CreateAsyncScope();
+        _backend = scope.ServiceProvider.GetRequiredService<IVectorSearchService>().Backend;
+    }
+
+    private async Task OnKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") await RunSearch();
+    }
+
+    private async Task RunSearch()
+    {
+        if (string.IsNullOrWhiteSpace(_query) || _busy) return;
+        _busy = true;
+        _status = null;
+        try
+        {
+            await using var scope = ScopeFactory.CreateAsyncScope();
+            var search = scope.ServiceProvider.GetRequiredService<IVectorSearchService>();
+            _results = await search.SearchAsync(_query, 8, string.IsNullOrEmpty(_repo) ? null : _repo);
+            if (_results.Count == 0) _status = "No matches. Index a repository first, or check GEMINI_API_KEY.";
+        }
+        catch (Exception ex)
+        {
+            _status = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task IndexSelected()
+    {
+        if (string.IsNullOrEmpty(_repo) || _busy) return;
+        _busy = true;
+        _status = "Indexing… this calls the Gemini embedding API per file.";
+        try
+        {
+            await using var scope = ScopeFactory.CreateAsyncScope();
+            var search = scope.ServiceProvider.GetRequiredService<IVectorSearchService>();
+            var n = await search.IndexRepositoryAsync(_repo);
+            _status = $"Indexed {n} files from {_repo}.";
+        }
+        catch (Exception ex)
+        {
+            _status = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private static string Trim(string s) => s.Length > 600 ? s[..600] + " …" : s;
+}

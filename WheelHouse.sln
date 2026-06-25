@@ -1,0 +1,57 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{C1686399-B6E6-43FB-B315-198DD34A2176}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WheelHouse.Core", "src\WheelHouse.Core\WheelHouse.Core.csproj", "{52DA41AC-A52D-420A-B62D-7E1B403D6165}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WheelHouse.Infrastructure", "src\WheelHouse.Infrastructure\WheelHouse.Infrastructure.csproj", "{7654CE06-7C33-43C4-B024-AB6B07661E72}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WheelHouse.Web", "src\WheelHouse.Web\WheelHouse.Web.csproj", "{CE152604-6BE7-48E0-A342-64AD3B6F7424}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WheelHouse.Desktop", "src\WheelHouse.Desktop\WheelHouse.Desktop.csproj", "{7177C79C-2F17-43D3-9644-D4F7ABCCEF8E}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{CE893D5E-F518-460D-8562-77232E297A2A}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WheelHouse.Tests", "tests\WheelHouse.Tests\WheelHouse.Tests.csproj", "{B1BF458F-FE38-49D9-8FFE-E5C73B30411F}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{52DA41AC-A52D-420A-B62D-7E1B403D6165}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{52DA41AC-A52D-420A-B62D-7E1B403D6165}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{52DA41AC-A52D-420A-B62D-7E1B403D6165}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{52DA41AC-A52D-420A-B62D-7E1B403D6165}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7654CE06-7C33-43C4-B024-AB6B07661E72}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7654CE06-7C33-43C4-B024-AB6B07661E72}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7654CE06-7C33-43C4-B024-AB6B07661E72}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7654CE06-7C33-43C4-B024-AB6B07661E72}.Release|Any CPU.Build.0 = Release|Any CPU
+		{CE152604-6BE7-48E0-A342-64AD3B6F7424}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{CE152604-6BE7-48E0-A342-64AD3B6F7424}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{CE152604-6BE7-48E0-A342-64AD3B6F7424}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{CE152604-6BE7-48E0-A342-64AD3B6F7424}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7177C79C-2F17-43D3-9644-D4F7ABCCEF8E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7177C79C-2F17-43D3-9644-D4F7ABCCEF8E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7177C79C-2F17-43D3-9644-D4F7ABCCEF8E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7177C79C-2F17-43D3-9644-D4F7ABCCEF8E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B1BF458F-FE38-49D9-8FFE-E5C73B30411F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B1BF458F-FE38-49D9-8FFE-E5C73B30411F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B1BF458F-FE38-49D9-8FFE-E5C73B30411F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B1BF458F-FE38-49D9-8FFE-E5C73B30411F}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{52DA41AC-A52D-420A-B62D-7E1B403D6165} = {C1686399-B6E6-43FB-B315-198DD34A2176}
+		{7654CE06-7C33-43C4-B024-AB6B07661E72} = {C1686399-B6E6-43FB-B315-198DD34A2176}
+		{CE152604-6BE7-48E0-A342-64AD3B6F7424} = {C1686399-B6E6-43FB-B315-198DD34A2176}
+		{7177C79C-2F17-43D3-9644-D4F7ABCCEF8E} = {C1686399-B6E6-43FB-B315-198DD34A2176}
+		{B1BF458F-FE38-49D9-8FFE-E5C73B30411F} = {CE893D5E-F518-460D-8562-77232E297A2A}
+	EndGlobalSection
+EndGlobal

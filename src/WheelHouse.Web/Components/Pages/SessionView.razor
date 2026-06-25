@@ -1,0 +1,534 @@
+@page "/session/{Id:int}"
+@inject IDbContextFactory<WheelHouseDbContext> DbFactory
+@inject IGeminiService Gemini
+@inject IAgentOrchestrator Orchestrator
+@inject IJSRuntime JS
+@implements IDisposable
+
+<PageTitle>WheelHouse — Session</PageTitle>
+
+@if (_session is null)
+{
+    <div class="empty-state"><h1>Session not found</h1><a href="/">Back to dashboard</a></div>
+}
+else
+{
+    <header class="page-head">
+        <div>
+            @if (_editingName)
+            {
+                <div class="rename-row">
+                    <input class="input rename-input" @bind="_nameDraft" @onkeydown="OnRenameKey" />
+                    <button class="btn primary" @onclick="SaveName"
+                            disabled="@string.IsNullOrWhiteSpace(_nameDraft)">Save</button>
+                    <button class="btn ghost" @onclick="() => _editingName = false">Cancel</button>
+                </div>
+            }
+            else
+            {
+                <div class="title-row">
+                    <h1>@_session.Name</h1>
+                    <button class="btn ghost icon-btn" title="Rename" @onclick="StartRename">✎</button>
+                </div>
+            }
+            <p class="muted mono">@_session.RepositoryPath</p>
+        </div>
+        <div class="head-actions">
+            <span class="status status-@_session.Status.ToString().ToLower()">@_session.Status</span>
+            <button class="btn ghost" @onclick="ExportMarkdown">Export MD</button>
+        </div>
+    </header>
+
+    <section class="split">
+        <div class="panel plan-panel">
+            <div class="panel-head"><h2>Gemini · Research &amp; Plan</h2></div>
+
+            <textarea class="input goal" rows="3" placeholder="Describe the goal for this session…"
+                      @bind="_goal"></textarea>
+            <div class="row">
+                <button class="btn primary" @onclick="GeneratePlan" disabled="@_planning">
+                    @(_planning ? "Planning…" : "Generate plan")
+                </button>
+                @if (!Gemini.IsConfigured)
+                {
+                    <span class="tag warn">GEMINI_API_KEY not set</span>
+                }
+            </div>
+
+            <div class="plan-body">
+                @if (string.IsNullOrWhiteSpace(_session.PlanningContext))
+                {
+                    <p class="muted">No plan yet. Set a goal and generate one.</p>
+                }
+                else
+                {
+                    <pre class="plan-text">@_session.PlanningContext</pre>
+                }
+            </div>
+
+            <div class="tasks-section">
+                <div class="panel-head">
+                    <h2>Test-Driven Tasks</h2>
+                    <button class="btn" @onclick="GenerateTasks"
+                            disabled="@(_generatingTasks || string.IsNullOrWhiteSpace(_session.PlanningContext))">
+                        @(_generatingTasks ? "Generating…" : (_tasks.Count == 0 ? "Generate task list" : "Regenerate"))
+                    </button>
+                </div>
+
+                @if (_tasks.Count == 0)
+                {
+                    <p class="muted">Generate a plan, then break it into verifiable tasks.</p>
+                }
+                else
+                {
+                    <div class="task-card-list">
+                        @foreach (var t in _tasks)
+                        {
+                            <div class="task-card @(_selectedTask?.Id == t.Id ? "selected" : "")"
+                                 @onclick="() => SelectTask(t)">
+                                <span class="task-dot status-@t.Status.ToString().ToLower()"></span>
+                                <div class="task-card-main">
+                                    <div class="task-title">@(t.Sequence + 1). @t.Title</div>
+                                    <div class="task-sub">
+                                        <span class="status status-@t.Status.ToString().ToLower()">@t.Status</span>
+                                        @if (!string.IsNullOrWhiteSpace(t.VerificationCommand))
+                                        {
+                                            <code class="verify-cmd">@t.VerificationCommand</code>
+                                        }
+                                    </div>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                }
+
+                @if (_selectedTask is not null)
+                {
+                    <div class="task-detail">
+                        <h3>@_selectedTask.Title</h3>
+                        <p class="muted">@_selectedTask.Description</p>
+                        @if (!string.IsNullOrWhiteSpace(_selectedTask.VerificationCommand))
+                        {
+                            <div class="verify-line">Verify: <code>@_selectedTask.VerificationCommand</code></div>
+                        }
+                        <div class="row">
+                            <button class="btn primary" @onclick="() => RunTask(_selectedTask)" disabled="@_running">
+                                @(_running ? "Running…" : "Run task")
+                            </button>
+                        </div>
+                        @if (!string.IsNullOrWhiteSpace(_selectedTask.VerificationOutput))
+                        {
+                            <h3>Verification</h3>
+                            <pre class="plan-text">@_selectedTask.VerificationOutput</pre>
+                            @if (_selectedTask.Status == WorkItemStatus.Failed)
+                            {
+                                <button class="btn warn" @onclick="() => TroubleshootTask(_selectedTask)" disabled="@_troubleshooting">
+                                    @(_troubleshooting ? "Asking Gemini…" : "Ask Gemini for a fix")
+                                </button>
+                            }
+                        }
+                    </div>
+                }
+            </div>
+        </div>
+
+        <div class="panel console-panel">
+            <div class="panel-head">
+                <h2>Claude Code · Execution</h2>
+                <div class="card-actions">
+                    @if (_events.Count > 0)
+                    {
+                        <button class="btn ghost" @onclick="ClearTranscript" disabled="@_running">Clear</button>
+                    }
+                    <button class="btn" @onclick="RunFullPlan" disabled="@_running">
+                        @(_running ? "Running…" : "Run full plan")
+                    </button>
+                </div>
+            </div>
+
+            <div class="console">
+                @foreach (var e in _events)
+                {
+                    <div class="line line-@e.Kind.ToString().ToLower() @(e.IsError ? "err" : "")">
+                        <span class="line-tag">@KindLabel(e.Kind)</span>
+                        <span class="line-text">@e.Text</span>
+                    </div>
+                }
+                @if (_events.Count == 0)
+                {
+                    <div class="muted">Console output will stream here.</div>
+                }
+            </div>
+
+            @if (_fix is not null)
+            {
+                <div class="trouble">
+                    <div class="trouble-head">⚠ Gemini fix suggestion</div>
+                    <pre class="fix-text">@_fix</pre>
+                </div>
+            }
+            else if (_lastError is not null)
+            {
+                <div class="trouble">
+                    <div class="trouble-head">⚠ Execution error detected</div>
+                    <button class="btn warn" @onclick="Troubleshoot" disabled="@_troubleshooting">
+                        @(_troubleshooting ? "Asking Gemini…" : "Ask Gemini for a fix")
+                    </button>
+                </div>
+            }
+        </div>
+    </section>
+}
+
+@code {
+    [Parameter] public int Id { get; set; }
+
+    private AgentSession? _session;
+    private List<TaskItem> _tasks = new();
+    private TaskItem? _selectedTask;
+    private string _goal = "";
+    private bool _planning, _running, _troubleshooting, _generatingTasks;
+    private bool _editingName;
+    private string _nameDraft = "";
+    private readonly List<AgentStreamEvent> _events = new();
+    private readonly List<AgentStreamEvent> _pending = new();
+    private int? _currentTaskId;
+    private string? _lastError;
+    private string? _fix;
+    private CancellationTokenSource? _cts;
+
+    // Workspace permission policy applied when running Claude.
+    private string _permissionMode = "acceptEdits";
+    private IReadOnlyList<string> _allowedTools = Array.Empty<string>();
+    private IReadOnlyList<string> _disallowedTools = Array.Empty<string>();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        _session = await db.Sessions.Include(s => s.Tasks).FirstOrDefaultAsync(s => s.Id == Id);
+        _tasks = _session?.Tasks.OrderBy(t => t.Sequence).ToList() ?? new();
+
+        if (_session is not null)
+        {
+            var saved = await db.SessionEvents.Where(e => e.AgentSessionId == Id)
+                .OrderBy(e => e.Id).ToListAsync();
+            _events.AddRange(saved.Select(ToStreamEvent));
+
+            var ws = await db.Workspaces.Include(w => w.CommandRules)
+                .FirstOrDefaultAsync(w => w.Id == _session.WorkspaceId);
+            if (ws is not null)
+            {
+                _permissionMode = string.IsNullOrWhiteSpace(ws.PermissionMode) ? "acceptEdits" : ws.PermissionMode;
+                (_allowedTools, _disallowedTools) = CommandRulePermissions.Build(ws.CommandRules);
+            }
+        }
+    }
+
+    private void Emit(AgentStreamEvent e)
+    {
+        _events.Add(e);
+        _pending.Add(e);
+        if (e.IsError) _lastError = e.Text;
+    }
+
+    private async Task FlushTranscript()
+    {
+        if (_session is null || _pending.Count == 0) return;
+        var batch = _pending.ToList();
+        _pending.Clear();
+
+        await using var db = await DbFactory.CreateDbContextAsync();
+        foreach (var e in batch)
+            db.SessionEvents.Add(new SessionEvent
+            {
+                AgentSessionId = _session.Id,
+                TaskItemId = _currentTaskId,
+                Kind = e.Kind.ToString(),
+                Text = e.Text,
+                ToolName = e.ToolName,
+                IsError = e.IsError
+            });
+        await db.SaveChangesAsync();
+    }
+
+    private async Task ClearTranscript()
+    {
+        if (_session is null || _running) return;
+        _events.Clear();
+        _pending.Clear();
+        _lastError = null;
+        _fix = null;
+        await using var db = await DbFactory.CreateDbContextAsync();
+        await db.SessionEvents.Where(e => e.AgentSessionId == _session.Id).ExecuteDeleteAsync();
+    }
+
+    private static AgentStreamEvent ToStreamEvent(SessionEvent s)
+        => new(Enum.TryParse<AgentEventKind>(s.Kind, out var k) ? k : AgentEventKind.System,
+            s.Text, s.ToolName, s.IsError);
+
+    private void StartRename()
+    {
+        if (_session is null) return;
+        _nameDraft = _session.Name;
+        _editingName = true;
+    }
+
+    private async Task OnRenameKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") await SaveName();
+        else if (e.Key == "Escape") _editingName = false;
+    }
+
+    private async Task SaveName()
+    {
+        if (_session is null) return;
+        var name = _nameDraft.Trim();
+        if (name.Length == 0) return;
+
+        _session.Name = name;
+        _editingName = false;
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var tracked = await db.Sessions.FindAsync(_session.Id);
+        if (tracked is not null) { tracked.Name = name; await db.SaveChangesAsync(); }
+    }
+
+    private async Task ExportMarkdown()
+    {
+        if (_session is null) return;
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var export = await SessionExport.BuildAsync(db, _session.Id);
+        if (export is { } e)
+            await JS.InvokeVoidAsync("wheelhouseDownload", e.Filename, e.Markdown);
+    }
+
+    private async Task GeneratePlan()
+    {
+        if (_session is null || _planning) return;
+        _planning = true;
+        try
+        {
+            var plan = await Gemini.GenerateResearchPlanAsync(_goal, $"Repository: {_session.RepositoryPath}");
+            _session.PlanningContext = plan;
+
+            await using var db = await DbFactory.CreateDbContextAsync();
+            var tracked = await db.Sessions.FindAsync(_session.Id);
+            if (tracked is not null) { tracked.PlanningContext = plan; await db.SaveChangesAsync(); }
+        }
+        finally { _planning = false; }
+    }
+
+    private async Task GenerateTasks()
+    {
+        if (_session is null || _generatingTasks || string.IsNullOrWhiteSpace(_session.PlanningContext)) return;
+        _generatingTasks = true;
+        try
+        {
+            var generated = await Gemini.GenerateTasksAsync(_session.PlanningContext);
+
+            await using var db = await DbFactory.CreateDbContextAsync();
+            var existing = db.Tasks.Where(t => t.AgentSessionId == _session.Id);
+            db.Tasks.RemoveRange(existing);
+
+            var seq = 0;
+            foreach (var t in generated)
+            {
+                db.Tasks.Add(new TaskItem
+                {
+                    AgentSessionId = _session.Id,
+                    Sequence = seq++,
+                    Title = t.Title,
+                    Description = t.Description,
+                    VerificationCommand = t.VerificationCommand,
+                    Status = WorkItemStatus.Pending
+                });
+            }
+            await db.SaveChangesAsync();
+            await LoadTasks();
+            _selectedTask = _tasks.FirstOrDefault();
+        }
+        finally { _generatingTasks = false; }
+    }
+
+    private async Task LoadTasks()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        _tasks = await db.Tasks.Where(t => t.AgentSessionId == _session!.Id)
+            .OrderBy(t => t.Sequence).ToListAsync();
+    }
+
+    private void SelectTask(TaskItem t)
+    {
+        _selectedTask = t;
+        _fix = null;
+    }
+
+    private async Task RunFullPlan()
+    {
+        if (_session is null || _running) return;
+        _selectedTask = null;
+        _currentTaskId = null;
+        var prompt = string.IsNullOrWhiteSpace(_session.PlanningContext)
+            ? (string.IsNullOrWhiteSpace(_goal) ? "Summarize this repository." : _goal)
+            : $"Execute this plan step by step:\n\n{_session.PlanningContext}";
+
+        await SetSessionStatus(SessionStatus.Running);
+        var err = await StreamRun(prompt);
+        await SetSessionStatus(err is null ? SessionStatus.Completed : SessionStatus.Failed);
+        await FlushTranscript();
+    }
+
+    private async Task RunTask(TaskItem task)
+    {
+        if (_session is null || _running) return;
+        _selectedTask = task;
+        _currentTaskId = task.Id;
+        _fix = null;
+        try
+        {
+            await SetTaskStatus(task, WorkItemStatus.InProgress);
+
+            var prompt =
+                $"Implement the following task in this repository. Make the necessary code changes.\n\n" +
+                $"Task: {task.Title}\n\n{task.Description}";
+            if (!string.IsNullOrWhiteSpace(_session.PlanningContext))
+                prompt += $"\n\nOverall plan for context:\n{_session.PlanningContext}";
+
+            var err = await StreamRun(prompt);
+            if (err is not null)
+            {
+                await SetTaskStatus(task, WorkItemStatus.Failed);
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(task.VerificationCommand))
+            {
+                await SetTaskStatus(task, WorkItemStatus.Completed);
+                return;
+            }
+
+            // Test-Driven Handoff: the task isn't done until its verification command passes.
+            await SetTaskStatus(task, WorkItemStatus.Verifying);
+            Emit(new AgentStreamEvent(AgentEventKind.System, $"Verifying: {task.VerificationCommand}"));
+            await InvokeAsync(StateHasChanged);
+
+            var (exitCode, output) = await Orchestrator.RunVerificationAsync(
+                task.VerificationCommand, _session.RepositoryPath);
+            var passed = exitCode == 0;
+            task.VerificationOutput = $"$ {task.VerificationCommand}\n(exit {exitCode})\n\n{output}";
+            task.Status = passed ? WorkItemStatus.Completed : WorkItemStatus.Failed;
+            if (passed) task.CompletedAt = DateTime.UtcNow;
+            await SaveTask(task);
+
+            Emit(new AgentStreamEvent(
+                passed ? AgentEventKind.Result : AgentEventKind.Error,
+                passed ? "Verification passed." : $"Verification failed (exit {exitCode}).",
+                IsError: !passed));
+            await InvokeAsync(StateHasChanged);
+        }
+        finally
+        {
+            await FlushTranscript();
+            _currentTaskId = null;
+        }
+    }
+
+    private async Task<string?> StreamRun(string prompt)
+    {
+        _running = true;
+        _lastError = null;
+        _fix = null;
+        _cts = new CancellationTokenSource();
+        try
+        {
+            var request = new AgentRunRequest(
+                prompt, _session!.RepositoryPath,
+                PermissionMode: _permissionMode,
+                AllowedTools: _allowedTools.Count > 0 ? _allowedTools : null,
+                DisallowedTools: _disallowedTools.Count > 0 ? _disallowedTools : null);
+            await foreach (var evt in Orchestrator.RunAsync(request, _cts.Token))
+            {
+                Emit(evt);
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (Exception ex)
+        {
+            Emit(new AgentStreamEvent(AgentEventKind.Error, ex.Message, IsError: true));
+        }
+        finally { _running = false; }
+        return _lastError;
+    }
+
+    private async Task Troubleshoot()
+    {
+        if (_session is null || _lastError is null || _troubleshooting) return;
+        _troubleshooting = true;
+        try
+        {
+            var recent = string.Join("\n", _events.TakeLast(20).Select(e => e.Text));
+            _fix = await Gemini.TroubleshootAsync("claude run", recent, _session.RepositoryPath);
+        }
+        finally { _troubleshooting = false; }
+    }
+
+    private async Task TroubleshootTask(TaskItem task)
+    {
+        if (_session is null || _troubleshooting) return;
+        _troubleshooting = true;
+        try
+        {
+            _fix = await Gemini.TroubleshootAsync(
+                task.VerificationCommand ?? task.Title,
+                task.VerificationOutput ?? "(no output)",
+                _session.RepositoryPath);
+        }
+        finally { _troubleshooting = false; }
+    }
+
+    private async Task SetTaskStatus(TaskItem task, WorkItemStatus status)
+    {
+        task.Status = status;
+        if (status == WorkItemStatus.Completed) task.CompletedAt = DateTime.UtcNow;
+        await SaveTask(task);
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task SaveTask(TaskItem task)
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var tracked = await db.Tasks.FindAsync(task.Id);
+        if (tracked is null) return;
+        tracked.Status = task.Status;
+        tracked.VerificationOutput = task.VerificationOutput;
+        tracked.CompletedAt = task.CompletedAt;
+        await db.SaveChangesAsync();
+    }
+
+    private async Task SetSessionStatus(SessionStatus status)
+    {
+        if (_session is null) return;
+        _session.Status = status;
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var tracked = await db.Sessions.FindAsync(_session.Id);
+        if (tracked is not null)
+        {
+            tracked.Status = status;
+            if (status is SessionStatus.Completed or SessionStatus.Failed)
+                tracked.CompletedAt = DateTime.UtcNow;
+            await db.SaveChangesAsync();
+        }
+    }
+
+    private static string KindLabel(AgentEventKind k) => k switch
+    {
+        AgentEventKind.AssistantText => "claude",
+        AgentEventKind.ToolUse => "tool",
+        AgentEventKind.ToolResult => "result",
+        AgentEventKind.System => "sys",
+        AgentEventKind.Result => "done",
+        AgentEventKind.Error => "error",
+        _ => "·"
+    };
+
+    public void Dispose() => _cts?.Cancel();
+}

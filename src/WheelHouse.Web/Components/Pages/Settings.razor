@@ -1,0 +1,97 @@
+@page "/settings"
+@using Microsoft.Extensions.DependencyInjection
+@inject IServiceScopeFactory ScopeFactory
+@inject NavigationManager Nav
+
+<PageTitle>WheelHouse — Settings</PageTitle>
+
+<header class="page-head">
+    <div>
+        <h1>Settings</h1>
+        <p class="muted">Branding and defaults. Secrets and infrastructure config live in <code>.env</code>.</p>
+    </div>
+</header>
+
+@if (_config is null)
+{
+    <section class="panel"><p class="muted">Loading…</p></section>
+}
+else
+{
+    <section class="grid two-col">
+        <div class="panel">
+            <div class="panel-head"><h2>Branding</h2></div>
+            <label class="field">
+                <span class="field-name">Company / organization name</span>
+                <input class="input" @bind="_config.CompanyName" />
+            </label>
+            <label class="field">
+                <span class="field-name">Product name</span>
+                <input class="input" @bind="_config.ProductName" />
+            </label>
+            <label class="field">
+                <span class="field-name">Tagline</span>
+                <input class="input" @bind="_config.Tagline" />
+            </label>
+        </div>
+
+        <div class="panel">
+            <div class="panel-head"><h2>Defaults</h2></div>
+            <label class="field">
+                <span class="field-name">Default permission mode for new workspaces</span>
+                <select class="input" @bind="_config.DefaultPermissionMode">
+                    <option value="acceptEdits">acceptEdits — auto-apply file edits (recommended)</option>
+                    <option value="default">default — prompt for everything</option>
+                    <option value="bypassPermissions">bypassPermissions — allow everything</option>
+                </select>
+            </label>
+            <p class="muted small">
+                Per-workspace permission and auto-approve rules are managed from each workspace's
+                Settings page.
+            </p>
+        </div>
+    </section>
+
+    <section class="panel">
+        <div class="row">
+            <button class="btn primary" @onclick="Save">Save &amp; apply</button>
+            @if (_saved)
+            {
+                <span class="tag">saved</span>
+            }
+        </div>
+        <p class="muted small">Saving reloads the app so the new branding takes effect everywhere.</p>
+    </section>
+}
+
+@code {
+    private AppConfiguration? _config;
+    private bool _saved;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var scope = ScopeFactory.CreateAsyncScope();
+        var settings = scope.ServiceProvider.GetRequiredService<IAppSettingsService>();
+        var current = await settings.GetAsync();
+        // Work on a copy so edits aren't tracked until Save.
+        _config = new AppConfiguration
+        {
+            Id = current.Id,
+            CompanyName = current.CompanyName,
+            ProductName = current.ProductName,
+            Tagline = current.Tagline,
+            DefaultPermissionMode = current.DefaultPermissionMode
+        };
+    }
+
+    private async Task Save()
+    {
+        if (_config is null) return;
+        await using var scope = ScopeFactory.CreateAsyncScope();
+        var settings = scope.ServiceProvider.GetRequiredService<IAppSettingsService>();
+        await settings.SaveAsync(_config);
+        _saved = true;
+        // Force a full reload so the layout picks up the new branding immediately.
+        Nav.NavigateTo("/settings", forceLoad: true);
+    }
+}
