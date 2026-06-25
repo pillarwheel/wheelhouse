@@ -4,6 +4,7 @@
 @inject IDbContextFactory<WheelHouseDbContext> DbFactory
 @inject IGeminiService Gemini
 @inject IAgentOrchestrator Orchestrator
+@inject IGitService Git
 @inject IServiceScopeFactory ScopeFactory
 @inject IJSRuntime JS
 @implements IDisposable
@@ -50,6 +51,23 @@ else
     <section class="split">
         <div class="panel plan-panel">
             <div class="panel-head"><h2>Gemini · Research &amp; Plan</h2></div>
+
+            @if (_git.IsRepo)
+            {
+                <div class="git-bar">
+                    <span class="tag mono">⎇ @_git.Branch</span>
+                    <span class="tag @(_git.Clean ? "" : "warn")">@(_git.Clean ? "clean" : "uncommitted changes")</span>
+                    <button class="btn ghost" @onclick="CreateSessionBranch" disabled="@_gitBusy">Branch for this session</button>
+                    @if (!_git.Clean)
+                    {
+                        <button class="btn ghost" @onclick="DiscardChanges" disabled="@_gitBusy">Discard changes</button>
+                    }
+                    @if (_gitMessage is not null)
+                    {
+                        <span class="tag subtle">@_gitMessage</span>
+                    }
+                </div>
+            }
 
             <textarea class="input goal" rows="3" placeholder="Describe the goal for this session…"
                       @bind="_goal"></textarea>
@@ -185,9 +203,15 @@ else
             {
                 <div class="trouble">
                     <div class="trouble-head">⚠ Execution error detected</div>
-                    <button class="btn warn" @onclick="Troubleshoot" disabled="@_troubleshooting">
-                        @(_troubleshooting ? "Asking Gemini…" : "Ask Gemini for a fix")
-                    </button>
+                    <div class="row">
+                        <button class="btn warn" @onclick="Troubleshoot" disabled="@_troubleshooting">
+                            @(_troubleshooting ? "Asking Gemini…" : "Ask Gemini for a fix")
+                        </button>
+                        @if (_git.IsRepo && !_git.Clean)
+                        {
+                            <button class="btn ghost" @onclick="DiscardChanges" disabled="@_gitBusy">Discard changes</button>
+                        }
+                    </div>
                 </div>
             }
         </div>
@@ -206,6 +230,9 @@ else
     private string _nameDraft = "";
     private int _ragSnippetCount;
     private string? _savedPath;
+    private GitStatus _git = new(false, string.Empty, true);
+    private bool _gitBusy;
+    private string? _gitMessage;
     private readonly List<AgentStreamEvent> _events = new();
     private readonly List<AgentStreamEvent> _pending = new();
     private int? _currentTaskId;
@@ -237,8 +264,43 @@ else
                 _permissionMode = string.IsNullOrWhiteSpace(ws.PermissionMode) ? "acceptEdits" : ws.PermissionMode;
                 (_allowedTools, _disallowedTools) = CommandRulePermissions.Build(ws.CommandRules);
             }
+
+            _git = await Git.GetStatusAsync(_session.RepositoryPath);
         }
     }
+
+    private async Task RefreshGit()
+    {
+        if (_session is not null) _git = await Git.GetStatusAsync(_session.RepositoryPath);
+    }
+
+    private async Task CreateSessionBranch()
+    {
+        if (_session is null || _gitBusy) return;
+        _gitBusy = true;
+        try
+        {
+            var result = await Git.CreateBranchAsync(_session.RepositoryPath, $"wheelhouse/session-{_session.Id}");
+            _gitMessage = result.Success ? "branch created" : Trim(result.Output);
+            await RefreshGit();
+        }
+        finally { _gitBusy = false; }
+    }
+
+    private async Task DiscardChanges()
+    {
+        if (_session is null || _gitBusy) return;
+        _gitBusy = true;
+        try
+        {
+            var result = await Git.DiscardChangesAsync(_session.RepositoryPath);
+            _gitMessage = result.Success ? "changes discarded" : Trim(result.Output);
+            await RefreshGit();
+        }
+        finally { _gitBusy = false; }
+    }
+
+    private static string Trim(string s) => s.Length > 80 ? s[..80] + "…" : s;
 
     private void Emit(AgentStreamEvent e)
     {

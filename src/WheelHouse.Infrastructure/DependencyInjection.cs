@@ -53,6 +53,7 @@ public static class DependencyInjection
         services.AddScoped<ITranscriptSearch, TranscriptSearchService>();
         services.AddScoped<IAppSettingsService, AppSettingsService>();
         services.AddSingleton<IVerificationRunner, PowerShellVerificationRunner>();
+        services.AddSingleton<IGitService, GitService>();
 
         AddEmbeddings(services);
         AddVectorStore(services);

@@ -214,6 +214,13 @@ textarea.input { resize: vertical; font-family: inherit; }
 .line-result .line-text { color: var(--green); }
 .line.err .line-text, .line-error .line-text { color: var(--red); }
 
+/* ---------- Git bar ---------- */
+.git-bar {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    margin: 0 0 12px; padding: 8px 10px;
+    background: rgba(8, 12, 20, 0.5); border: 1px solid var(--border); border-radius: 10px;
+}
+
 /* ---------- Test-Driven tasks ---------- */
 .tasks-section { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
 .task-card-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
