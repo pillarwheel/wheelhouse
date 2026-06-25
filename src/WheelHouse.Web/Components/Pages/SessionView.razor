@@ -1,7 +1,10 @@
 @page "/session/{Id:int}"
+@using Microsoft.Extensions.DependencyInjection
+@using WheelHouse.Core.Search
 @inject IDbContextFactory<WheelHouseDbContext> DbFactory
 @inject IGeminiService Gemini
 @inject IAgentOrchestrator Orchestrator
+@inject IServiceScopeFactory ScopeFactory
 @inject IJSRuntime JS
 @implements IDisposable
 
@@ -52,6 +55,12 @@ else
                 @if (!Gemini.IsConfigured)
                 {
                     <span class="tag warn">GEMINI_API_KEY not set</span>
+                }
+                @if (_ragSnippetCount > 0)
+                {
+                    <span class="tag" title="Relevant code injected into the planning context">
+                        @_ragSnippetCount code snippet@(_ragSnippetCount == 1 ? "" : "s") injected
+                    </span>
                 }
             </div>
 
@@ -190,6 +199,7 @@ else
     private bool _planning, _running, _troubleshooting, _generatingTasks;
     private bool _editingName;
     private string _nameDraft = "";
+    private int _ragSnippetCount;
     private readonly List<AgentStreamEvent> _events = new();
     private readonly List<AgentStreamEvent> _pending = new();
     private int? _currentTaskId;
@@ -307,7 +317,9 @@ else
         _planning = true;
         try
         {
-            var plan = await Gemini.GenerateResearchPlanAsync(_goal, $"Repository: {_session.RepositoryPath}");
+            // RAG: enrich the planning context with semantically relevant code from the repo.
+            var context = await BuildPlanningContext();
+            var plan = await Gemini.GenerateResearchPlanAsync(_goal, context);
             _session.PlanningContext = plan;
 
             await using var db = await DbFactory.CreateDbContextAsync();
@@ -315,6 +327,27 @@ else
             if (tracked is not null) { tracked.PlanningContext = plan; await db.SaveChangesAsync(); }
         }
         finally { _planning = false; }
+    }
+
+    private async Task<string> BuildPlanningContext()
+    {
+        _ragSnippetCount = 0;
+        if (_session is null || string.IsNullOrWhiteSpace(_goal))
+            return $"Repository: {_session?.RepositoryPath}";
+
+        try
+        {
+            await using var scope = ScopeFactory.CreateAsyncScope();
+            var search = scope.ServiceProvider.GetRequiredService<IVectorSearchService>();
+            var hits = await search.SearchAsync(_goal, topN: 5, repositoryPath: _session.RepositoryPath);
+            _ragSnippetCount = hits.Count;
+            return RagContext.Build(_session.RepositoryPath, hits);
+        }
+        catch
+        {
+            // Repo not indexed / no embedding provider — fall back to a path-only context.
+            return $"Repository: {_session.RepositoryPath}";
+        }
     }
 
     private async Task GenerateTasks()
