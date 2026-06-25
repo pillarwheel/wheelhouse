@@ -54,6 +54,8 @@ public static class DependencyInjection
         services.AddScoped<IAppSettingsService, AppSettingsService>();
         services.AddSingleton<IVerificationRunner, PowerShellVerificationRunner>();
         services.AddSingleton<IGitService, GitService>();
+        services.AddSingleton<IWorkspaceIndexQueue, WorkspaceIndexQueue>();
+        services.AddHostedService<WorkspaceIndexingService>();
 
         AddEmbeddings(services);
         AddVectorStore(services);

@@ -33,6 +33,14 @@ public class Workspace
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime? LastSyncedAt { get; set; }
 
+    /// <summary>Local RAG index state (auto-indexed in the background when added).</summary>
+    public IndexState IndexStatus { get; set; } = IndexState.None;
+
+    /// <summary>Number of files in the local code index for this workspace.</summary>
+    public int IndexedFileCount { get; set; }
+
+    public DateTime? LastIndexedAt { get; set; }
+
     public List<CommandRule> CommandRules { get; set; } = new();
     public List<AgentSession> Sessions { get; set; } = new();
 }

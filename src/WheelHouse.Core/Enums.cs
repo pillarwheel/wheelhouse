@@ -39,3 +39,14 @@ public enum RuleAction
     AutoDeny,
     Prompt
 }
+
+/// <summary>Local RAG indexing state of a <see cref="Models.Workspace"/>.</summary>
+public enum IndexState
+{
+    None,
+    Queued,
+    Indexing,
+    Indexed,
+    Failed,
+    Unavailable
+}

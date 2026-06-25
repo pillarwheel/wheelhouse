@@ -131,6 +131,7 @@ h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: var
 }
 .tag.subtle { color: var(--muted); }
 .tag.warn { color: var(--amber); border-color: rgba(251, 191, 36, 0.3); background: rgba(251, 191, 36, 0.08); }
+.tag.ok { color: var(--green); border-color: rgba(52, 211, 153, 0.3); background: rgba(52, 211, 153, 0.08); }
 
 /* ---------- Status ---------- */
 .status {

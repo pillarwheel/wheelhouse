@@ -3,7 +3,9 @@
 @inject IDbContextFactory<WheelHouseDbContext> DbFactory
 @inject WheelHouse.Infrastructure.Services.WorkspaceConfigService ConfigService
 @inject IServiceScopeFactory ScopeFactory
+@inject IWorkspaceIndexQueue IndexQueue
 @inject NavigationManager Nav
+@implements IDisposable
 
 <PageTitle>WheelHouse — Dashboard</PageTitle>
 
@@ -37,6 +39,7 @@
                             <div class="card-meta">
                                 <span class="tag">@w.DefaultBranch</span>
                                 <span class="tag">@w.Sessions.Count sessions</span>
+                                <span class="tag @IndexTagClass(w.IndexStatus)" title="Local RAG index">@IndexLabel(w)</span>
                                 @if (w.LastSyncedAt is not null)
                                 {
                                     <span class="tag subtle">synced @w.LastSyncedAt?.ToLocalTime().ToString("g")</span>
@@ -44,6 +47,10 @@
                             </div>
                         </div>
                         <div class="card-actions">
+                            <button class="btn ghost" @onclick="() => Reindex(w)"
+                                    disabled="@(w.IndexStatus is IndexState.Queued or IndexState.Indexing)">
+                                Re-index
+                            </button>
                             <a class="btn ghost" href="/workspace/@w.Id">Settings</a>
                             <button class="btn" @onclick="() => StartSession(w)">New session</button>
                         </div>
@@ -104,7 +111,53 @@
 
     private bool CanAdd => !string.IsNullOrWhiteSpace(_newName) && !string.IsNullOrWhiteSpace(_newPath);
 
-    protected override async Task OnInitializedAsync() => await Load();
+    private bool _polling;
+    private bool _disposed;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Load();
+        if (_workspaces.Any(w => w.IndexStatus is IndexState.Queued or IndexState.Indexing))
+            _ = PollIndexing();
+    }
+
+    // Refreshes the dashboard while any workspace is indexing, then stops.
+    private async Task PollIndexing()
+    {
+        if (_polling) return;
+        _polling = true;
+        try
+        {
+            while (!_disposed)
+            {
+                await Task.Delay(2500);
+                if (_disposed) break;
+                await Load();
+                await InvokeAsync(StateHasChanged);
+                if (!_workspaces.Any(w => w.IndexStatus is IndexState.Queued or IndexState.Indexing)) break;
+            }
+        }
+        finally { _polling = false; }
+    }
+
+    private static string IndexLabel(Workspace w) => w.IndexStatus switch
+    {
+        IndexState.Indexed => $"indexed · {w.IndexedFileCount} files",
+        IndexState.Indexing => "indexing…",
+        IndexState.Queued => "queued",
+        IndexState.Failed => "index failed",
+        IndexState.Unavailable => "no embeddings",
+        _ => "not indexed"
+    };
+
+    private static string IndexTagClass(IndexState s) => s switch
+    {
+        IndexState.Indexed => "ok",
+        IndexState.Failed or IndexState.Unavailable => "warn",
+        _ => "subtle"
+    };
+
+    public void Dispose() => _disposed = true;
 
     private async Task Load()
     {
@@ -134,16 +187,35 @@
         await using var scope = ScopeFactory.CreateAsyncScope();
         var config = await scope.ServiceProvider.GetRequiredService<IAppSettingsService>().GetAsync();
 
-        db.Workspaces.Add(new Workspace
+        var workspace = new Workspace
         {
             Name = _newName.Trim(),
             AbsolutePath = path,
             IsActive = _workspaces.Count == 0,
-            PermissionMode = config.DefaultPermissionMode
-        });
+            PermissionMode = config.DefaultPermissionMode,
+            IndexStatus = IndexState.Queued
+        };
+        db.Workspaces.Add(workspace);
         await db.SaveChangesAsync();
+
+        IndexQueue.Enqueue(workspace.Id);   // background RAG indexing
         _newName = _newPath = "";
         await Load();
+        _ = PollIndexing();
+    }
+
+    private async Task Reindex(Workspace w)
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var tracked = await db.Workspaces.FindAsync(w.Id);
+        if (tracked is not null)
+        {
+            tracked.IndexStatus = IndexState.Queued;
+            await db.SaveChangesAsync();
+        }
+        IndexQueue.Enqueue(w.Id);
+        await Load();
+        _ = PollIndexing();
     }
 
     private async Task SyncConfig(Workspace w)
