@@ -147,17 +147,44 @@ else
                 @if (_selectedTask is not null)
                 {
                     <div class="task-detail">
-                        <h3>@_selectedTask.Title</h3>
-                        <p class="muted">@_selectedTask.Description</p>
-                        @if (!string.IsNullOrWhiteSpace(_selectedTask.VerificationCommand))
+                        @if (_editingTask)
                         {
-                            <div class="verify-line">Verify: <code>@_selectedTask.VerificationCommand</code></div>
+                            <label class="field">
+                                <span class="field-name">Title</span>
+                                <input class="input" @bind="_taskTitleDraft" />
+                            </label>
+                            <label class="field">
+                                <span class="field-name">Description</span>
+                                <textarea class="input" rows="3" @bind="_taskDescDraft"></textarea>
+                            </label>
+                            <label class="field">
+                                <span class="field-name">Verification command</span>
+                                <textarea class="input mono" rows="2" @bind="_taskVerifyDraft"
+                                          placeholder="e.g. dotnet test --filter X (leave blank to skip)"></textarea>
+                            </label>
+                            <div class="row">
+                                <button class="btn primary" @onclick="SaveTaskEdits">Save</button>
+                                <button class="btn ghost" @onclick="() => _editingTask = false">Cancel</button>
+                            </div>
                         }
-                        <div class="row">
-                            <button class="btn primary" @onclick="() => RunTask(_selectedTask)" disabled="@_running">
-                                @(_running ? "Running…" : "Run task")
-                            </button>
-                        </div>
+                        else
+                        {
+                            <div class="title-row">
+                                <h3>@_selectedTask.Title</h3>
+                                <button class="btn ghost icon-btn" title="Edit task"
+                                        @onclick="StartEditTask" disabled="@_running">✎</button>
+                            </div>
+                            <p class="muted">@_selectedTask.Description</p>
+                            @if (!string.IsNullOrWhiteSpace(_selectedTask.VerificationCommand))
+                            {
+                                <div class="verify-line">Verify: <code>@_selectedTask.VerificationCommand</code></div>
+                            }
+                            <div class="row">
+                                <button class="btn primary" @onclick="() => RunTask(_selectedTask)" disabled="@_running">
+                                    @(_running ? "Running…" : "Run task")
+                                </button>
+                            </div>
+                        }
                         @if (!string.IsNullOrWhiteSpace(_selectedTask.VerificationOutput))
                         {
                             <h3>Verification</h3>
@@ -244,6 +271,10 @@ else
     private AgentSession? _session;
     private List<TaskItem> _tasks = new();
     private TaskItem? _selectedTask;
+    private bool _editingTask;
+    private string _taskTitleDraft = "";
+    private string _taskDescDraft = "";
+    private string _taskVerifyDraft = "";
     private string _goal = "";
     private bool _planning, _running, _troubleshooting, _generatingTasks;
     private bool _editingName;
@@ -519,7 +550,39 @@ else
     private void SelectTask(TaskItem t)
     {
         _selectedTask = t;
+        _editingTask = false;
         _fix = null;
+    }
+
+    private void StartEditTask()
+    {
+        if (_selectedTask is null) return;
+        _taskTitleDraft = _selectedTask.Title;
+        _taskDescDraft = _selectedTask.Description;
+        _taskVerifyDraft = _selectedTask.VerificationCommand ?? "";
+        _editingTask = true;
+    }
+
+    private async Task SaveTaskEdits()
+    {
+        if (_selectedTask is null) return;
+        var title = _taskTitleDraft.Trim();
+        if (title.Length == 0) return;
+
+        _selectedTask.Title = title;
+        _selectedTask.Description = _taskDescDraft.Trim();
+        _selectedTask.VerificationCommand = string.IsNullOrWhiteSpace(_taskVerifyDraft) ? null : _taskVerifyDraft.Trim();
+        _editingTask = false;
+
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var tracked = await db.Tasks.FindAsync(_selectedTask.Id);
+        if (tracked is not null)
+        {
+            tracked.Title = _selectedTask.Title;
+            tracked.Description = _selectedTask.Description;
+            tracked.VerificationCommand = _selectedTask.VerificationCommand;
+            await db.SaveChangesAsync();
+        }
     }
 
     private Task RunFullPlan() => RunPlan(null);
