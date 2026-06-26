@@ -1,0 +1,43 @@
+.commit-history-panel {
+    margin-top: 2rem;
+    padding: 1rem;
+    background-color: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+}
+
+.commit-history-panel h4 {
+    font-size: 1.1em;
+    margin: 0 0 0.8rem 0;
+    color: var(--muted);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    font-size: 0.75em;
+}
+
+.commit-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.commit-item {
+    padding: 0.4rem 0;
+    border-bottom: 1px solid var(--border);
+    color: var(--text);
+}
+
+.commit-item:last-child {
+    border-bottom: none;
+}
+
+.commit-item .mono {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 0.88em;
+    color: var(--cyan);
+}

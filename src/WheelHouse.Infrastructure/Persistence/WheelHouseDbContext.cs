@@ -1,4 +1,7 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using WheelHouse.Core.Models;
 
 namespace WheelHouse.Infrastructure.Persistence;
@@ -6,6 +9,8 @@ namespace WheelHouse.Infrastructure.Persistence;
 /// <summary>EF Core context backing WheelHouse on local SQLite.</summary>
 public class WheelHouseDbContext : DbContext
 {
+    private static readonly JsonSerializerOptions _jsonOpts = new(JsonSerializerDefaults.Web);
+
     public WheelHouseDbContext(DbContextOptions<WheelHouseDbContext> options) : base(options) { }
 
     public DbSet<Workspace> Workspaces => Set<Workspace>();
@@ -16,6 +21,7 @@ public class WheelHouseDbContext : DbContext
     public DbSet<PromptTemplate> PromptTemplates => Set<PromptTemplate>();
     public DbSet<SessionEvent> SessionEvents => Set<SessionEvent>();
     public DbSet<AppConfiguration> AppConfig => Set<AppConfiguration>();
+    public DbSet<SessionTemplate> SessionTemplates => Set<SessionTemplate>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -25,6 +31,26 @@ public class WheelHouseDbContext : DbContext
             e.Property(w => w.Name).IsRequired();
         });
 
+        b.Entity<SessionTemplate>(e =>
+        {
+            e.Property(t => t.Name).IsRequired();
+
+            var stepsConverter = new ValueConverter<List<FlowStepConfiguration>, string>(
+                v => JsonSerializer.Serialize(v, _jsonOpts),
+                v => JsonSerializer.Deserialize<List<FlowStepConfiguration>>(v, _jsonOpts) ?? new());
+
+            // JSON-based comparer so EF change-tracks edits to the Steps collection.
+            var stepsComparer = new ValueComparer<List<FlowStepConfiguration>>(
+                (a, b) => JsonSerializer.Serialize(a, _jsonOpts) == JsonSerializer.Serialize(b, _jsonOpts),
+                v => v == null ? 0 : JsonSerializer.Serialize(v, _jsonOpts).GetHashCode(),
+                v => JsonSerializer.Deserialize<List<FlowStepConfiguration>>(
+                        JsonSerializer.Serialize(v, _jsonOpts), _jsonOpts) ?? new());
+
+            e.Property(t => t.Steps)
+                .HasColumnName("StepsJson")
+                .HasConversion(stepsConverter, stepsComparer);
+        });
+
         b.Entity<AgentSession>(e =>
         {
             e.HasIndex(s => s.SessionId);
@@ -32,6 +58,10 @@ public class WheelHouseDbContext : DbContext
                 .WithMany(w => w.Sessions)
                 .HasForeignKey(s => s.WorkspaceId)
                 .OnDelete(DeleteBehavior.Cascade);
+            e.HasOne(s => s.Template)
+                .WithMany()
+                .HasForeignKey(s => s.TemplateId)
+                .OnDelete(DeleteBehavior.SetNull);
         });
 
         b.Entity<TaskItem>(e =>

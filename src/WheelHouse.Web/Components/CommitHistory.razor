@@ -1,0 +1,17 @@
+@if (Commits is not null && Commits.Any())
+{
+    <div class="commit-history-panel">
+        <h4>Recent Commits</h4>
+        <ul class="commit-list">
+            @foreach (var commit in Commits)
+            {
+                <li class="commit-item"><span class="mono">@commit</span></li>
+            }
+        </ul>
+    </div>
+}
+
+@code {
+    [Parameter]
+    public IEnumerable<string>? Commits { get; set; }
+}

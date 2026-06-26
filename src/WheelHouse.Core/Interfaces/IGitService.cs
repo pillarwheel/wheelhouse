@@ -26,4 +26,7 @@ public interface IGitService
 
     /// <summary>Reverts uncommitted modifications to tracked files (<c>git restore .</c>).</summary>
     Task<GitResult> DiscardChangesAsync(string repositoryPath, CancellationToken cancellationToken = default);
+
+    /// <summary>Returns the most recent <paramref name="count"/> commits as one-line summaries.</summary>
+    Task<IEnumerable<string>> GetRecentCommits(string repositoryPath, int count, CancellationToken cancellationToken = default);
 }

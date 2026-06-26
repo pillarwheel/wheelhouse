@@ -1,0 +1,184 @@
+@page "/flow-templates"
+@using Microsoft.EntityFrameworkCore
+@inject IDbContextFactory<WheelHouseDbContext> DbFactory
+
+<PageTitle>WheelHouse — Flow Templates</PageTitle>
+
+<header class="page-head">
+    <div><h1>Flow Templates</h1><p class="muted">Define which planning and execution services each session uses.</p></div>
+    <div class="head-actions">
+        <button class="btn primary" @onclick="ShowCreate">+ New template</button>
+    </div>
+</header>
+
+@if (_creating || _editing is not null)
+{
+    <section class="panel" style="margin-bottom:1.5rem">
+        <div class="panel-head"><h2>@(_editing is not null ? "Edit template" : "New template")</h2></div>
+        <div class="form-group">
+            <label>Name</label>
+            <input class="input" @bind="_draft.Name" placeholder="e.g. Research-Only Flow" />
+        </div>
+        <div class="form-group">
+            <label>Description</label>
+            <input class="input" @bind="_draft.Description" placeholder="Short description" />
+        </div>
+
+        <div class="panel-head" style="margin-top:1rem"><h3>Steps</h3><button class="btn ghost" @onclick="AddStep">+ Add step</button></div>
+        @foreach (var (step, i) in _draftSteps.Select((s, i) => (s, i)))
+        {
+            <div class="step-row">
+                <select class="input" value="@step.StepType.ToString()" @onchange="e => step.StepType = Enum.Parse<FlowStepType>((string)e.Value!)">
+                    @foreach (var t in Enum.GetValues<FlowStepType>())
+                    {
+                        <option value="@t">@t</option>
+                    }
+                </select>
+                <input class="input" placeholder="Service name (e.g. Gemini)" @bind="step.ServiceName" />
+                <button class="btn ghost" @onclick="() => RemoveStep(i)">✕</button>
+            </div>
+        }
+
+        <div class="row" style="margin-top:1rem">
+            <button class="btn primary" @onclick="Save" disabled="@string.IsNullOrWhiteSpace(_draft.Name)">Save</button>
+            <button class="btn ghost" @onclick="Cancel">Cancel</button>
+            @if (_saveError is not null)
+            {
+                <span class="tag warn">@_saveError</span>
+            }
+        </div>
+    </section>
+}
+
+@if (_templates.Count == 0 && !_creating)
+{
+    <div class="empty-state"><p class="muted">No flow templates yet.</p></div>
+}
+else
+{
+    <div class="card-list">
+        @foreach (var t in _templates)
+        {
+            <div class="card">
+                <div class="card-head">
+                    <div>
+                        <div class="card-title">@t.Name</div>
+                        @if (!string.IsNullOrWhiteSpace(t.Description))
+                        {
+                            <div class="card-sub muted">@t.Description</div>
+                        }
+                    </div>
+                    <div class="card-actions">
+                        <button class="btn ghost" @onclick="() => StartEdit(t)">Edit</button>
+                        @if (!t.Name.Equals("Default Agent Flow", StringComparison.Ordinal))
+                        {
+                            <button class="btn ghost warn" @onclick="() => Delete(t)">Delete</button>
+                        }
+                    </div>
+                </div>
+                <div class="step-chips">
+                    @foreach (var s in t.Steps)
+                    {
+                        <span class="tag">@s.StepType · @s.ServiceName</span>
+                    }
+                </div>
+            </div>
+        }
+    </div>
+}
+
+@code {
+    private List<SessionTemplate> _templates = new();
+    private bool _creating;
+    private SessionTemplate? _editing;
+    private SessionTemplate _draft = new();
+    private List<FlowStepConfiguration> _draftSteps = new();
+    private string? _saveError;
+
+    protected override async Task OnInitializedAsync() => await LoadTemplates();
+
+    private async Task LoadTemplates()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        _templates = await db.SessionTemplates.OrderBy(t => t.Id).ToListAsync();
+    }
+
+    private void ShowCreate()
+    {
+        _editing = null;
+        _draft = new SessionTemplate();
+        _draftSteps = new List<FlowStepConfiguration>();
+        _saveError = null;
+        _creating = true;
+    }
+
+    private void StartEdit(SessionTemplate t)
+    {
+        _creating = false;
+        _editing = t;
+        _draft = new SessionTemplate { Id = t.Id, Name = t.Name, Description = t.Description };
+        _draftSteps = t.Steps.Select(s => new FlowStepConfiguration
+        {
+            StepType = s.StepType,
+            ServiceName = s.ServiceName,
+            ConfigurationParameters = new Dictionary<string, string>(s.ConfigurationParameters)
+        }).ToList();
+        _saveError = null;
+    }
+
+    private void AddStep() => _draftSteps.Add(new FlowStepConfiguration { ServiceName = "Gemini" });
+
+    private void RemoveStep(int index) => _draftSteps.RemoveAt(index);
+
+    private async Task Save()
+    {
+        _saveError = null;
+        try
+        {
+            await using var db = await DbFactory.CreateDbContextAsync();
+            if (_editing is not null)
+            {
+                var tracked = await db.SessionTemplates.FindAsync(_editing.Id);
+                if (tracked is not null)
+                {
+                    tracked.Name = _draft.Name.Trim();
+                    tracked.Description = _draft.Description.Trim();
+                    tracked.Steps = _draftSteps;
+                    await db.SaveChangesAsync();
+                }
+            }
+            else
+            {
+                db.SessionTemplates.Add(new SessionTemplate
+                {
+                    Name = _draft.Name.Trim(),
+                    Description = _draft.Description.Trim(),
+                    Steps = _draftSteps
+                });
+                await db.SaveChangesAsync();
+            }
+            _creating = false;
+            _editing = null;
+            await LoadTemplates();
+        }
+        catch (Exception ex)
+        {
+            _saveError = ex.Message;
+        }
+    }
+
+    private async Task Delete(SessionTemplate t)
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var tracked = await db.SessionTemplates.FindAsync(t.Id);
+        if (tracked is not null) { db.SessionTemplates.Remove(tracked); await db.SaveChangesAsync(); }
+        await LoadTemplates();
+    }
+
+    private void Cancel()
+    {
+        _creating = false;
+        _editing = null;
+        _saveError = null;
+    }
+}

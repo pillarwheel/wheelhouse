@@ -57,6 +57,11 @@ public static class DependencyInjection
         services.AddSingleton<IWorkspaceIndexQueue, WorkspaceIndexQueue>();
         services.AddHostedService<WorkspaceIndexingService>();
 
+        // Template-driven flow: keyed implementations + resolver
+        services.AddKeyedScoped<IPlanningService, GeminiPlanningService>("Gemini");
+        services.AddKeyedSingleton<ITaskOrchestrationService, AgentOrchestratorService>("ClaudeCode");
+        services.AddScoped<ISessionFlowResolver, SessionFlowResolver>();
+
         AddEmbeddings(services);
         AddVectorStore(services);
         services.AddScoped<IVectorSearchService, VectorSearchService>();

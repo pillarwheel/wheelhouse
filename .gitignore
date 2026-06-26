@@ -21,6 +21,10 @@ appsettings.*.Local.json
 # Local Claude Code settings (personal allowlist); launch.json is shared
 .claude/settings.local.json
 
+# Local tool caches / per-repo runtime data
+.serena/
+.wheelhouse/
+
 # WheelHouse suggestions list
 wheelhouse_suggestions.md
 

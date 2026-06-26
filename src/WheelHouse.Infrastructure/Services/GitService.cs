@@ -36,6 +36,14 @@ public class GitService : IGitService
     public Task<GitResult> DiscardChangesAsync(string repositoryPath, CancellationToken cancellationToken = default)
         => RunAsync(repositoryPath, cancellationToken, "restore", ".");
 
+    public async Task<IEnumerable<string>> GetRecentCommits(string repositoryPath, int count, CancellationToken cancellationToken = default)
+    {
+        var result = await RunAsync(repositoryPath, cancellationToken, "log", "-n", count.ToString(), "--oneline");
+        if (!result.Success || string.IsNullOrWhiteSpace(result.Output))
+            return [];
+        return result.Output.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+    }
+
     private async Task<GitResult> RunAsync(string repositoryPath, CancellationToken cancellationToken, params string[] args)
     {
         if (!Directory.Exists(repositoryPath))

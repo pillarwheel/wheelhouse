@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using WheelHouse.Core.Interfaces;
+using WheelHouse.Core.Models;
 using WheelHouse.Infrastructure;
 using WheelHouse.Infrastructure.Configuration;
 using WheelHouse.Infrastructure.Persistence;
@@ -48,5 +49,26 @@ public static class WheelHouseWebApp
         // Seed the built-in prompt-template library (idempotent).
         var templates = scope.ServiceProvider.GetRequiredService<IPromptTemplateService>();
         templates.SeedBuiltInsAsync().GetAwaiter().GetResult();
+
+        SeedDefaultFlowTemplate(db);
+    }
+
+    private static void SeedDefaultFlowTemplate(WheelHouseDbContext db)
+    {
+        if (db.SessionTemplates.Any()) return;
+
+        db.SessionTemplates.Add(new SessionTemplate
+        {
+            Name = "Default Agent Flow",
+            Description = "Gemini plans, Claude Code executes. The standard WheelHouse pipeline.",
+            Steps =
+            [
+                new FlowStepConfiguration { StepType = FlowStepType.Planning, ServiceName = "Gemini" },
+                new FlowStepConfiguration { StepType = FlowStepType.Task,     ServiceName = "Gemini" },
+                new FlowStepConfiguration { StepType = FlowStepType.Execute,  ServiceName = "ClaudeCode" },
+                new FlowStepConfiguration { StepType = FlowStepType.Verify,   ServiceName = "ClaudeCode" },
+            ]
+        });
+        db.SaveChanges();
     }
 }

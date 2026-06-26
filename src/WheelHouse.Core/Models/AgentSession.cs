@@ -26,6 +26,10 @@ public class AgentSession
     public int WorkspaceId { get; set; }
     public Workspace? Workspace { get; set; }
 
+    /// <summary>Optional template controlling which planning/execution services are used. Null falls back to the default flow.</summary>
+    public int? TemplateId { get; set; }
+    public SessionTemplate? Template { get; set; }
+
     public List<TaskItem> Tasks { get; set; } = new();
     public List<SessionEvent> Events { get; set; } = new();
 }

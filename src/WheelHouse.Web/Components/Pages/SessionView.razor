@@ -2,8 +2,7 @@
 @using Microsoft.Extensions.DependencyInjection
 @using WheelHouse.Core.Search
 @inject IDbContextFactory<WheelHouseDbContext> DbFactory
-@inject IGeminiService Gemini
-@inject IAgentOrchestrator Orchestrator
+@inject ISessionFlowResolver FlowResolver
 @inject IGitService Git
 @inject IServiceScopeFactory ScopeFactory
 @inject IJSRuntime JS
@@ -86,7 +85,7 @@ else
                 <button class="btn primary" @onclick="GeneratePlan" disabled="@_planning">
                     @(_planning ? "Planning…" : "Generate plan")
                 </button>
-                @if (!Gemini.IsConfigured)
+                @if (!FlowResolver.GetPlanningService(_session!).IsConfigured)
                 {
                     <span class="tag warn">GEMINI_API_KEY not set</span>
                 }
@@ -206,8 +205,16 @@ else
             @if (_fix is not null)
             {
                 <div class="trouble">
-                    <div class="trouble-head">⚠ Gemini fix suggestion</div>
+                    <div class="trouble-head">
+                        ⚠ Gemini fix suggestion@(_fixTask is not null ? $" · {_fixTask.Title}" : "")
+                    </div>
                     <pre class="fix-text">@_fix</pre>
+                    <div class="row">
+                        <button class="btn primary" @onclick="ApplyFix" disabled="@_running">
+                            @(_running ? "Applying…" : (_fixTask is not null ? "Apply fix & re-run task" : "Apply fix & re-run"))
+                        </button>
+                        <button class="btn ghost" @onclick="DismissFix" disabled="@_running">Dismiss</button>
+                    </div>
                 </div>
             }
             else if (_lastError is not null)
@@ -227,6 +234,8 @@ else
             }
         </div>
     </section>
+
+    <CommitHistory Commits="_recentCommits" />
 }
 
 @code {
@@ -244,11 +253,13 @@ else
     private GitStatus _git = new(false, string.Empty, true);
     private bool _gitBusy;
     private string? _gitMessage;
+    private IEnumerable<string> _recentCommits = [];
     private readonly List<AgentStreamEvent> _events = new();
     private readonly List<AgentStreamEvent> _pending = new();
     private int? _currentTaskId;
     private string? _lastError;
     private string? _fix;
+    private TaskItem? _fixTask;
     private CancellationTokenSource? _cts;
 
     // Workspace permission policy applied when running Claude.
@@ -277,6 +288,15 @@ else
             }
 
             _git = await Git.GetStatusAsync(_session.RepositoryPath);
+            try
+            {
+                _recentCommits = await Git.GetRecentCommits(_session.RepositoryPath, 5);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error fetching commits: {ex.Message}");
+                _recentCommits = [];
+            }
         }
     }
 
@@ -426,7 +446,7 @@ else
         {
             // RAG: enrich the planning context with semantically relevant code from the repo.
             var context = await BuildPlanningContext();
-            var plan = await Gemini.GenerateResearchPlanAsync(_goal, context);
+            var plan = await FlowResolver.GetPlanningService(_session).GenerateResearchPlanAsync(_goal, context);
             _session.PlanningContext = plan;
 
             await using var db = await DbFactory.CreateDbContextAsync();
@@ -463,7 +483,7 @@ else
         _generatingTasks = true;
         try
         {
-            var generated = await Gemini.GenerateTasksAsync(_session.PlanningContext);
+            var generated = await FlowResolver.GetPlanningService(_session).GenerateTasksAsync(_session.PlanningContext);
 
             await using var db = await DbFactory.CreateDbContextAsync();
             var existing = db.Tasks.Where(t => t.AgentSessionId == _session.Id);
@@ -502,7 +522,9 @@ else
         _fix = null;
     }
 
-    private async Task RunFullPlan()
+    private Task RunFullPlan() => RunPlan(null);
+
+    private async Task RunPlan(string? fixContext)
     {
         if (_session is null || _running) return;
         _selectedTask = null;
@@ -510,6 +532,8 @@ else
         var prompt = string.IsNullOrWhiteSpace(_session.PlanningContext)
             ? (string.IsNullOrWhiteSpace(_goal) ? "Summarize this repository." : _goal)
             : $"Execute this plan step by step:\n\n{_session.PlanningContext}";
+        if (!string.IsNullOrWhiteSpace(fixContext))
+            prompt += $"\n\nA previous attempt failed. Apply the following diagnosis and fix:\n{fixContext}";
 
         await SetSessionStatus(SessionStatus.Running);
         var err = await StreamRun(prompt);
@@ -517,7 +541,25 @@ else
         await FlushTranscript();
     }
 
-    private async Task RunTask(TaskItem task)
+    // Feeds a Gemini fix suggestion back into the failed task (or full plan) and re-runs it.
+    private async Task ApplyFix()
+    {
+        if (_session is null || _running || string.IsNullOrWhiteSpace(_fix)) return;
+        var fix = _fix;
+        var task = _fixTask;
+        _fix = null;
+        _fixTask = null;
+        if (task is not null) await RunTask(task, fix);
+        else await RunPlan(fix);
+    }
+
+    private void DismissFix()
+    {
+        _fix = null;
+        _fixTask = null;
+    }
+
+    private async Task RunTask(TaskItem task, string? fixContext = null)
     {
         if (_session is null || _running) return;
         _selectedTask = task;
@@ -530,6 +572,9 @@ else
             var prompt =
                 $"Implement the following task in this repository. Make the necessary code changes.\n\n" +
                 $"Task: {task.Title}\n\n{task.Description}";
+            if (!string.IsNullOrWhiteSpace(fixContext))
+                prompt += $"\n\nA previous attempt failed verification. Apply the following diagnosis and " +
+                          $"fix, then complete the task:\n{fixContext}";
             if (!string.IsNullOrWhiteSpace(_session.PlanningContext))
                 prompt += $"\n\nOverall plan for context:\n{_session.PlanningContext}";
 
@@ -551,7 +596,7 @@ else
             Emit(new AgentStreamEvent(AgentEventKind.System, $"Verifying: {task.VerificationCommand}"));
             await InvokeAsync(StateHasChanged);
 
-            var (exitCode, output) = await Orchestrator.RunVerificationAsync(
+            var (exitCode, output) = await FlowResolver.GetOrchestrationService(_session).RunVerificationAsync(
                 task.VerificationCommand, _session.RepositoryPath);
             var passed = exitCode == 0;
             task.VerificationOutput = $"$ {task.VerificationCommand}\n(exit {exitCode})\n\n{output}";
@@ -585,7 +630,7 @@ else
                 PermissionMode: _permissionMode,
                 AllowedTools: _allowedTools.Count > 0 ? _allowedTools : null,
                 DisallowedTools: _disallowedTools.Count > 0 ? _disallowedTools : null);
-            await foreach (var evt in Orchestrator.RunAsync(request, _cts.Token))
+            await foreach (var evt in FlowResolver.GetOrchestrationService(_session).RunAsync(request, _cts.Token))
             {
                 Emit(evt);
                 await InvokeAsync(StateHasChanged);
@@ -606,7 +651,8 @@ else
         try
         {
             var recent = string.Join("\n", _events.TakeLast(20).Select(e => e.Text));
-            _fix = await Gemini.TroubleshootAsync("claude run", recent, _session.RepositoryPath);
+            _fix = await FlowResolver.GetPlanningService(_session).TroubleshootAsync("claude run", recent, _session.RepositoryPath);
+            _fixTask = null; // fix targets the full-plan run, not a specific task
         }
         finally { _troubleshooting = false; }
     }
@@ -617,10 +663,11 @@ else
         _troubleshooting = true;
         try
         {
-            _fix = await Gemini.TroubleshootAsync(
+            _fix = await FlowResolver.GetPlanningService(_session).TroubleshootAsync(
                 task.VerificationCommand ?? task.Title,
                 task.VerificationOutput ?? "(no output)",
                 _session.RepositoryPath);
+            _fixTask = task; // fix targets this task so it can be re-run
         }
         finally { _troubleshooting = false; }
     }
