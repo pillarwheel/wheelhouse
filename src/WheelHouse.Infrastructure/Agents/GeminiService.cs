@@ -52,8 +52,18 @@ public class GeminiService : IGeminiService
         string plan, CancellationToken cancellationToken = default)
     {
         var prompt =
-            "Convert the following plan into a JSON array of tasks. " +
-            "Each item: {\"title\":string,\"description\":string,\"verificationCommand\":string|null}. " +
+            "Convert the following implementation plan into a JSON array of small, ordered tasks for a coding agent.\n" +
+            "Each item must be exactly: {\"title\":string,\"description\":string,\"verificationCommand\":string|null}.\n\n" +
+            "Rules for verificationCommand (IMPORTANT — bad commands cause false failures):\n" +
+            "- It runs from the repository ROOT in PowerShell on Windows and must exit 0 on success, non-zero on failure.\n" +
+            "- Prefer a single command that BUILDS or TESTS the project to prove the work — e.g. `dotnet build`, " +
+            "`dotnet test`, `dotnet test --filter <TestName>`, `npm run build`, `npm test`, or `pytest`. " +
+            "For a .NET solution, `dotnet build` compiles every project and is the most reliable check.\n" +
+            "- Do NOT invent or hard-code file paths, and do NOT use file-existence checks like `test -f <path>` " +
+            "or `Test-Path <path>` — guessed paths are the most common cause of false failures.\n" +
+            "- Do NOT use `dotnet ef migrations add` or commands that mutate state; to validate schema/migration " +
+            "code, use `dotnet build`.\n" +
+            "- Keep it to one line. Use null only when no build/test command can meaningfully verify the task.\n\n" +
             "Return ONLY the JSON array.\n\n## Plan\n" + plan;
 
         var raw = await GenerateAsync(prompt, cancellationToken, jsonMode: true);
