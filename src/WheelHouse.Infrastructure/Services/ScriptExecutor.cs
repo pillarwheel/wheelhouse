@@ -52,18 +52,39 @@ public class ScriptExecutor : IScriptExecutor
 
     public Func<string, Task<bool>>? ApprovalHandler { get; set; }
 
-    public async Task RunGraphAsync(
+    /// <summary>Thread-safe accumulator for run telemetry (parallel branches mutate it concurrently).</summary>
+    private sealed class Acc
+    {
+        public int Executed, Succeeded, Handoff, Tokens;
+        public bool? FinalVerify;
+        public readonly object Lock = new();
+    }
+
+    public async Task<ScriptRunMetrics> RunGraphAsync(
         AgentSession session,
         Action<string, AgentEventKind> onLog,
         Action<string> onNodeActive,
         CancellationToken cancellationToken)
     {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var acc = new Acc();
+
+        ScriptRunMetrics Result() => new()
+        {
+            NodesExecuted = acc.Executed,
+            NodesSucceeded = acc.Succeeded,
+            HandoffErrors = acc.Handoff,
+            FinalVerificationPassed = acc.FinalVerify,
+            ApproxTokens = acc.Tokens,
+            ElapsedMs = sw.ElapsedMilliseconds
+        };
+
         var graph = ScriptGraph.FromJson(session.Template?.GraphJson);
         var start = graph.StartNode;
         if (start is null)
         {
             onLog("Graph has no Start node — nothing to run.", AgentEventKind.Error);
-            return;
+            return Result();
         }
 
         var nodesById = graph.Nodes.ToDictionary(n => n.Id, StringComparer.Ordinal);
@@ -90,7 +111,11 @@ public class ScriptExecutor : IScriptExecutor
             var edge = graph.Edges.FirstOrDefault(e =>
                 e.TargetNodeId == node.Id && string.Equals(e.TargetPort, port, StringComparison.OrdinalIgnoreCase));
             if (edge is null) return null;
-            return outputs.TryGetValue(OutKey(edge.SourceNodeId, edge.SourcePort), out var v) ? v : null;
+            if (outputs.TryGetValue(OutKey(edge.SourceNodeId, edge.SourcePort), out var v) && !string.IsNullOrWhiteSpace(v))
+                return v;
+            // A wired input whose upstream value never materialized is a handoff/schema error.
+            Interlocked.Increment(ref acc.Handoff);
+            return null;
         }
 
         string Render(ScriptNode node, string? template)
@@ -138,6 +163,13 @@ public class ScriptExecutor : IScriptExecutor
             return (sb.ToString().Trim(), hadError);
         }
 
+        // Rough token estimate (chars ÷ 4) accumulated across LLM/agent nodes for the efficiency KPI.
+        void AddTokens(params string?[] texts)
+        {
+            var chars = texts.Where(t => t is not null).Sum(t => t!.Length);
+            if (chars > 0) Interlocked.Add(ref acc.Tokens, chars / 4);
+        }
+
         // Atomic git commit (research_notes §2): snapshot a code-changing stage so it can be rolled back.
         async Task AutoCommit(ScriptNode node)
         {
@@ -170,6 +202,7 @@ public class ScriptExecutor : IScriptExecutor
                     var prompt = ComposePrompt(node, node.Settings.GetValueOrDefault("Prompt"));
                     onLog($"Gemini ← {Truncate(prompt)}", AgentEventKind.System);
                     var response = await _gemini.CompleteAsync(prompt, cancellationToken);
+                    AddTokens(prompt, response);
                     Publish(node, response);
                     onLog(response, AgentEventKind.AssistantText);
                     return "Next";
@@ -179,6 +212,7 @@ public class ScriptExecutor : IScriptExecutor
                 {
                     var prompt = ComposePrompt(node, node.Settings.GetValueOrDefault("Prompt"));
                     var (response, error) = await RunClaude(prompt, "plan");
+                    AddTokens(prompt, response);
                     Publish(node, response);
                     return error ? "Failure" : "Success";
                 }
@@ -187,6 +221,7 @@ public class ScriptExecutor : IScriptExecutor
                 {
                     var prompt = ComposePrompt(node, node.Settings.GetValueOrDefault("Prompt"));
                     var (response, error) = await RunClaude(prompt, "acceptEdits");
+                    AddTokens(prompt, response);
                     Publish(node, response);
                     if (!error && string.Equals(node.Settings.GetValueOrDefault("AutoCommit"), "on", StringComparison.OrdinalIgnoreCase))
                         await AutoCommit(node);
@@ -213,6 +248,7 @@ public class ScriptExecutor : IScriptExecutor
                             $"A reviewer gave this feedback:\n{critique}\n\nRevise and improve the proposal below accordingly. " +
                             $"Return only the revised proposal:\n\n{currentText}", "plan");
                         transcript.AppendLine($"## Claude · round {i}").AppendLine(refined).AppendLine();
+                        AddTokens(critique, refined);
                         if (!string.IsNullOrWhiteSpace(refined)) currentText = refined;
                     }
                     Publish(node, transcript.ToString().Trim());
@@ -225,12 +261,14 @@ public class ScriptExecutor : IScriptExecutor
                     if (string.IsNullOrWhiteSpace(command))
                     {
                         onLog("No command configured — treating as passed.", AgentEventKind.System);
+                        lock (acc.Lock) acc.FinalVerify = true;
                         return "Passed";
                     }
                     onLog($"$ {command}", AgentEventKind.System);
                     var result = await _verifier.RunAsync(command, session.RepositoryPath, cancellationToken: cancellationToken);
                     onLog($"(exit {result.ExitCode})\n{result.Output}", result.Succeeded ? AgentEventKind.Result : AgentEventKind.Error);
                     Publish(node, result.Output);
+                    lock (acc.Lock) acc.FinalVerify = result.Succeeded;
                     return result.Succeeded ? "Passed" : "Failed";
                 }
 
@@ -326,6 +364,29 @@ public class ScriptExecutor : IScriptExecutor
             }
         }
 
+        // Runs one node with telemetry + per-node error isolation. Returns its control port, or null
+        // when the node threw (the branch then ends rather than crashing the whole run).
+        async Task<string?> RunNode(ScriptNode node, string entry)
+        {
+            try
+            {
+                var outPort = await ExecuteNodeAsync(node, entry);
+                // A node "succeeds" when it completes without throwing — routing to a Failed/Failure
+                // port is a valid result the engine handled, not an engine error.
+                Interlocked.Increment(ref acc.Executed);
+                Interlocked.Increment(ref acc.Succeeded);
+                return outPort;
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                Interlocked.Increment(ref acc.Executed);
+                var label = string.IsNullOrWhiteSpace(node.Name) ? node.Type : node.Name;
+                onLog($"Node '{label}' failed: {ex.Message}", AgentEventKind.Error);
+                return null;
+            }
+        }
+
         // Walks control flow from `node`. Returns the merge node it halted at (so the caller resumes
         // past it), or null when the path ends. `parallel` nodes fork concurrent sub-walks that rejoin.
         async Task<ScriptNode?> WalkAsync(ScriptNode? node, string entryPort)
@@ -345,6 +406,8 @@ public class ScriptExecutor : IScriptExecutor
                 {
                     onNodeActive(node.Id);
                     onLog($"▶ {(string.IsNullOrWhiteSpace(node.Name) ? node.Type : node.Name)} (parallel)", AgentEventKind.System);
+                    Interlocked.Increment(ref acc.Executed);
+                    Interlocked.Increment(ref acc.Succeeded);
 
                     var def = ScriptNodeTypes.Find("parallel");
                     var branches = new List<Task<ScriptNode?>>();
@@ -360,14 +423,16 @@ public class ScriptExecutor : IScriptExecutor
                     if (merge is null) return null; // branches ended without a merge
 
                     // Run the merge node once, then continue past it.
-                    var mergeOut = await ExecuteNodeAsync(merge, ScriptNodeTypes.ControlPort);
+                    var mergeOut = await RunNode(merge, ScriptNodeTypes.ControlPort);
+                    if (mergeOut is null) return null;
                     var me = ControlEdge(merge, mergeOut);
                     node = me is null ? null : nodesById.GetValueOrDefault(me.TargetNodeId);
                     entryPort = me?.TargetPort ?? ScriptNodeTypes.ControlPort;
                     continue;
                 }
 
-                var outPort = await ExecuteNodeAsync(node, entryPort);
+                var outPort = await RunNode(node, entryPort);
+                if (outPort is null) return null;
                 var edge = ControlEdge(node, outPort);
                 node = edge is null ? null : nodesById.GetValueOrDefault(edge.TargetNodeId);
                 entryPort = edge?.TargetPort ?? ScriptNodeTypes.ControlPort;
@@ -376,6 +441,7 @@ public class ScriptExecutor : IScriptExecutor
         }
 
         await WalkAsync(start, ScriptNodeTypes.ControlPort);
+        return Result();
     }
 
     private async Task ReplaceTasksAsync(int sessionId, IReadOnlyList<TaskItem> generated, CancellationToken ct)

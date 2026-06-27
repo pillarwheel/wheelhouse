@@ -1,5 +1,6 @@
 using WheelHouse.Core.Agents;
 using WheelHouse.Core.Models;
+using WheelHouse.Core.Models.Script;
 
 namespace WheelHouse.Core.Interfaces;
 
@@ -22,7 +23,8 @@ public interface IScriptExecutor
     /// <param name="session">The session whose template carries the graph; supplies goal and repository path.</param>
     /// <param name="onLog">Invoked with human-readable log lines and their event kind.</param>
     /// <param name="onNodeActive">Invoked with the id of the node about to run (for UI highlighting).</param>
-    Task RunGraphAsync(
+    /// <returns>Telemetry for the run (node success rate, handoff errors, final compile state, …).</returns>
+    Task<ScriptRunMetrics> RunGraphAsync(
         AgentSession session,
         Action<string, AgentEventKind> onLog,
         Action<string> onNodeActive,

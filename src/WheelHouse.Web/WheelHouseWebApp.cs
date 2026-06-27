@@ -76,6 +76,19 @@ public static class WheelHouseWebApp
             "Claude builds the backend while Gemini drafts the frontend concurrently, then Claude reviews the merge. (pattern B)",
             graph: BuildParallelPipeline());
 
+        // Self-improvement dogfooding scenarios (self_improvement_testing_plan §2).
+        SeedTemplate(db, "Self-Test: Formatting Gate",
+            "Checks dotnet format; on violations Claude reformats and re-verifies. (scenario 1)",
+            graph: BuildFormattingGate());
+
+        SeedTemplate(db, "Self-Test: Build Repair Loop",
+            "Builds the solution; on failure Gemini diagnoses, Claude repairs, and the loop retries. (scenario 2)",
+            graph: BuildBuildRepairLoop());
+
+        SeedTemplate(db, "Self-Test: PR Review (Dialogue + Approval)",
+            "Claude and Gemini debate the branch diff, Gemini drafts a checklist, then a human approves. (scenario 3)",
+            graph: BuildPrReview());
+
         db.SaveChanges();
     }
 
@@ -194,6 +207,79 @@ public static class WheelHouseWebApp
             Edge("start", "Goal", "backend", "Goal"),
             Edge("start", "Goal", "frontend", "Goal"),
             Edge("backend", "Response", "review", "Context"),
+        }
+    };
+
+    // Scenario 1: format-gate. Verify formatting; on failure Claude reformats, then re-verify.
+    private static ScriptGraph BuildFormattingGate() => new()
+    {
+        Nodes =
+        {
+            Node("start", "start", "Start", 60, 160),
+            Node("verify1", "verification", "Check format", 300, 160,
+                new() { ["Command"] = "dotnet format --verify-no-changes" }),
+            Node("fix", "claude-execute", "Reformat", 540, 280,
+                new() { ["Prompt"] = "Run `dotnet format` to fix all formatting violations across the solution.", ["AutoCommit"] = "on" }),
+            Node("verify2", "verification", "Re-check", 800, 280,
+                new() { ["Command"] = "dotnet format --verify-no-changes" }),
+        },
+        Edges =
+        {
+            Edge("start", "Next", "verify1", "Execute"),
+            Edge("verify1", "Failed", "fix", "Execute"),
+            Edge("fix", "Success", "verify2", "Execute"),
+            Edge("start", "Goal", "fix", "Goal"),
+        }
+    };
+
+    // Scenario 2: build-repair loop. Build; on failure Gemini diagnoses, Claude fixes, retry up to 3x.
+    private static ScriptGraph BuildBuildRepairLoop() => new()
+    {
+        Nodes =
+        {
+            Node("start", "start", "Start", 60, 160),
+            Node("build", "verification", "Build", 300, 160, new() { ["Command"] = "dotnet build" }),
+            Node("diag", "gemini-prompt", "Diagnose", 300, 360,
+                new() { ["Prompt"] = "Analyze these build error logs and recommend a precise fix:\n\n{{CONTEXT}}" }),
+            Node("fix", "claude-execute", "Repair", 560, 360,
+                new() { ["Prompt"] = "Apply this fix to repair the compilation:\n\n{{CONTEXT}}" }),
+            Node("loop", "loop-count", "Loop", 820, 360, new() { ["MaxIterations"] = "3" }),
+        },
+        Edges =
+        {
+            Edge("start", "Next", "build", "Execute"),
+            Edge("build", "Failed", "diag", "Execute"),
+            Edge("diag", "Next", "fix", "Execute"),
+            Edge("fix", "Success", "loop", "Execute"),
+            Edge("loop", "Loop", "build", "Execute"),
+            Edge("start", "Goal", "fix", "Goal"),
+            Edge("build", "Response", "diag", "Context"),
+            Edge("diag", "Response", "fix", "Context"),
+        }
+    };
+
+    // Scenario 3: collaborative PR review. Diff the branch, debate it, summarize, gate on approval.
+    private static ScriptGraph BuildPrReview() => new()
+    {
+        Nodes =
+        {
+            Node("start", "start", "Start", 60, 200),
+            Node("diff", "git-command", "Diff", 300, 200, new() { ["Command"] = "diff main" }),
+            Node("debate", "dialogue", "Debate", 540, 200,
+                new() { ["Prompt"] = "Review this diff for type safety and edge cases:\n\n{{CONTEXT}}", ["Rounds"] = "4" }),
+            Node("summary", "gemini-prompt", "Checklist", 800, 200,
+                new() { ["Prompt"] = "Summarize this peer discussion into a developer markdown review checklist:\n\n{{CONTEXT}}" }),
+            Node("approve", "wait-approval", "Approve", 1060, 200,
+                new() { ["Message"] = "Review the PR checklist:\n\n{{LastResponse}}" }),
+        },
+        Edges =
+        {
+            Edge("start", "Next", "diff", "Execute"),
+            Edge("diff", "Success", "debate", "Execute"),
+            Edge("debate", "Next", "summary", "Execute"),
+            Edge("summary", "Next", "approve", "Execute"),
+            Edge("diff", "Response", "debate", "Context"),
+            Edge("debate", "Response", "summary", "Context"),
         }
     };
 }

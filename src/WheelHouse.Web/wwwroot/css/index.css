@@ -433,3 +433,15 @@ textarea.input { resize: vertical; font-family: inherit; }
 .flow-dot.active { box-shadow: 0 0 0 3px rgba(34, 227, 214, 0.35); }
 
 .graph-panel { margin-bottom: 1.25rem; }
+
+/* KPI telemetry strip shown after a graph run (self-improvement testing plan §3). */
+.kpi-strip {
+    display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px;
+    padding: 12px 14px; border: 1px solid var(--border);
+    border-radius: 10px; background: var(--bg-2);
+}
+.kpi { display: flex; flex-direction: column; gap: 2px; min-width: 96px; }
+.kpi-label { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.6px; }
+.kpi-val { font-weight: 600; font-variant-numeric: tabular-nums; }
+.kpi-val.ok { color: var(--green); }
+.kpi-val.warn { color: var(--amber); }
