@@ -1,0 +1,326 @@
+@page "/flow-editor/{TemplateId:int}"
+@using Microsoft.EntityFrameworkCore
+@using WheelHouse.Core.Models.Script
+@inject IDbContextFactory<WheelHouseDbContext> DbFactory
+@inject NavigationManager Nav
+
+<PageTitle>WheelHouse — Script Editor</PageTitle>
+
+@if (_template is null)
+{
+    <div class="empty-state"><h1>Template not found</h1><a href="/flow-templates">Back to flow templates</a></div>
+}
+else
+{
+    <header class="page-head">
+        <div>
+            <div class="title-row">
+                <h1>Script: @_template.Name</h1>
+            </div>
+            <p class="muted">Wire nodes to script a multi-agent workflow. Click an output port, then an input port, to connect.</p>
+        </div>
+        <div class="head-actions">
+            @if (_saved)
+            {
+                <span class="tag ok">saved</span>
+            }
+            <button class="btn ghost" @onclick="GoBack">Back</button>
+            <button class="btn primary" @onclick="Save">Save graph</button>
+        </div>
+    </header>
+
+    <div class="flow-layout">
+        <aside class="flow-toolbox panel">
+            <div class="panel-head"><h3>Add node</h3></div>
+            @foreach (var def in ScriptNodeTypes.All)
+            {
+                <button class="btn ghost flow-add" @onclick="() => AddNode(def)"
+                        disabled="@(def.Type == "start" && _graph.Nodes.Any(n => n.Type == "start"))">
+                    + @def.Label
+                </button>
+            }
+
+            @if (_pendingSource is not null)
+            {
+                <div class="tag warn flow-hint">Wiring from @_pendingSource.Value.Port — click an input port (or click here to cancel)</div>
+                <button class="btn ghost" @onclick="() => _pendingSource = null">Cancel wiring</button>
+            }
+        </aside>
+
+        <div class="flow-canvas-scroll"
+             @onpointermove="OnPointerMove" @onpointerup="OnPointerUp" @onpointerleave="OnPointerUp">
+            <div class="flow-canvas">
+                <svg class="flow-edges" width="4000" height="2500">
+                    @foreach (var edge in _graph.Edges)
+                    {
+                        var d = EdgePath(edge);
+                        if (d is not null)
+                        {
+                            <path d="@d" class="flow-edge @(IsControlPort(edge.SourcePort) ? "control" : "data")"
+                                  @onclick="() => RemoveEdge(edge)" />
+                        }
+                    }
+                </svg>
+
+                @foreach (var node in _graph.Nodes)
+                {
+                    var def = ScriptNodeTypes.Find(node.Type);
+                    <div class="flow-node @(_selectedNodeId == node.Id ? "selected" : "")"
+                         style="left:@(node.X.ToString(Inv))px; top:@(node.Y.ToString(Inv))px; width:@(NodeWidth)px;">
+                        <div class="flow-node-head" @onpointerdown="e => StartDrag(node, e)">
+                            <span class="flow-node-title">@(string.IsNullOrWhiteSpace(node.Name) ? def?.Label ?? node.Type : node.Name)</span>
+                            <span class="flow-node-type">@node.Type</span>
+                        </div>
+                        <div class="flow-ports">
+                            <div class="flow-col flow-col-in">
+                                @foreach (var port in def?.Inputs ?? Array.Empty<string>())
+                                {
+                                    <div class="flow-port flow-port-in">
+                                        <span class="flow-dot @(IsControlPort(port) ? "control" : "data")"
+                                              @onclick="() => CompleteWire(node, port)" @onclick:stopPropagation="true"></span>
+                                        <span class="flow-port-label">@port</span>
+                                    </div>
+                                }
+                            </div>
+                            <div class="flow-col flow-col-out">
+                                @foreach (var port in def?.Outputs ?? Array.Empty<string>())
+                                {
+                                    <div class="flow-port flow-port-out">
+                                        <span class="flow-port-label">@port</span>
+                                        <span class="flow-dot @(IsControlPort(port) ? "control" : "data") @(IsPending(node, port) ? "active" : "")"
+                                              @onclick="() => StartWire(node, port)" @onclick:stopPropagation="true"></span>
+                                    </div>
+                                }
+                            </div>
+                        </div>
+                    </div>
+                }
+            </div>
+        </div>
+
+        <aside class="flow-sidebar panel">
+            @if (_selected is null)
+            {
+                <p class="muted">Select a node to edit it.</p>
+            }
+            else
+            {
+                var def = ScriptNodeTypes.Find(_selected.Type);
+                <div class="panel-head"><h3>@(def?.Label ?? _selected.Type)</h3></div>
+                <label class="field">
+                    <span class="field-name">Name</span>
+                    <input class="input" value="@_selected.Name"
+                           @oninput="e => _selected.Name = e.Value?.ToString() ?? string.Empty" />
+                </label>
+                @foreach (var f in def?.Settings ?? Array.Empty<ScriptSettingField>())
+                {
+                    <label class="field">
+                        <span class="field-name">@f.Label</span>
+                        @if (f.Options is not null)
+                        {
+                            <select class="input" value="@GetSetting(f.Key)"
+                                    @onchange="e => SetSetting(f.Key, e.Value?.ToString())">
+                                @foreach (var opt in f.Options)
+                                {
+                                    <option value="@opt">@opt</option>
+                                }
+                            </select>
+                        }
+                        else if (f.Multiline)
+                        {
+                            <textarea class="input mono" rows="5" value="@GetSetting(f.Key)"
+                                      @oninput="e => SetSetting(f.Key, e.Value?.ToString())"></textarea>
+                        }
+                        else
+                        {
+                            <input class="input mono" value="@GetSetting(f.Key)"
+                                   @oninput="e => SetSetting(f.Key, e.Value?.ToString())" />
+                        }
+                    </label>
+                }
+                @if (_selected.Type != "start")
+                {
+                    <button class="btn ghost warn" @onclick="DeleteSelected">Delete node</button>
+                }
+            }
+        </aside>
+    </div>
+}
+
+@code {
+    [Parameter] public int TemplateId { get; set; }
+
+    private const int NodeWidth = 190;
+    private const int HeaderH = 30;
+    private const int PortTopPad = 18;
+    private const int PortRowH = 24;
+    private static readonly System.Globalization.CultureInfo Inv = System.Globalization.CultureInfo.InvariantCulture;
+
+    private SessionTemplate? _template;
+    private ScriptGraph _graph = new();
+    private string? _selectedNodeId;
+    private ScriptNode? _selected => _selectedNodeId is null ? null : _graph.Nodes.FirstOrDefault(n => n.Id == _selectedNodeId);
+    private bool _saved;
+
+    // Drag state.
+    private string? _dragNodeId;
+    private double _dragMouseX, _dragMouseY, _dragNodeX, _dragNodeY;
+
+    // Wiring state: the output port a pending connection starts from.
+    private (string NodeId, string Port)? _pendingSource;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        _template = await db.SessionTemplates.FindAsync(TemplateId);
+        if (_template is null) return;
+
+        _graph = ScriptGraph.FromJson(_template.GraphJson);
+        if (_graph.Nodes.Count == 0)
+        {
+            _graph.Nodes.Add(new ScriptNode { Type = "start", Name = "Start", X = 60, Y = 80 });
+        }
+    }
+
+    private static bool IsControlPort(string port) => ScriptNodeTypes.IsControlPort(port);
+
+    private void AddNode(ScriptNodeType def)
+    {
+        // Stagger new nodes so they don't stack exactly on top of one another.
+        var n = _graph.Nodes.Count;
+        var node = new ScriptNode
+        {
+            Type = def.Type,
+            Name = def.Label,
+            X = 300 + (n % 3) * 230,
+            Y = 80 + (n % 5) * 60
+        };
+        _graph.Nodes.Add(node);
+        _selectedNodeId = node.Id;
+        _saved = false;
+    }
+
+    private void DeleteSelected()
+    {
+        if (_selected is null) return;
+        var id = _selected.Id;
+        _graph.Edges.RemoveAll(e => e.SourceNodeId == id || e.TargetNodeId == id);
+        _graph.Nodes.RemoveAll(n => n.Id == id);
+        _selectedNodeId = null;
+        _saved = false;
+    }
+
+    private void StartDrag(ScriptNode node, PointerEventArgs e)
+    {
+        _selectedNodeId = node.Id;
+        _dragNodeId = node.Id;
+        _dragMouseX = e.ClientX;
+        _dragMouseY = e.ClientY;
+        _dragNodeX = node.X;
+        _dragNodeY = node.Y;
+    }
+
+    private void OnPointerMove(PointerEventArgs e)
+    {
+        if (_dragNodeId is null) return;
+        var node = _graph.Nodes.FirstOrDefault(n => n.Id == _dragNodeId);
+        if (node is null) return;
+        node.X = Math.Max(0, _dragNodeX + (e.ClientX - _dragMouseX));
+        node.Y = Math.Max(0, _dragNodeY + (e.ClientY - _dragMouseY));
+    }
+
+    private void OnPointerUp(PointerEventArgs e)
+    {
+        if (_dragNodeId is not null)
+        {
+            _dragNodeId = null;
+            _saved = false;
+        }
+    }
+
+    private void StartWire(ScriptNode node, string port)
+    {
+        _pendingSource = (node.Id, port);
+        _selectedNodeId = node.Id;
+    }
+
+    private bool IsPending(ScriptNode node, string port)
+        => _pendingSource is { } p && p.NodeId == node.Id && p.Port == port;
+
+    private void CompleteWire(ScriptNode target, string port)
+    {
+        if (_pendingSource is not { } src) return;
+        if (src.NodeId == target.Id) { _pendingSource = null; return; } // no self-loops
+
+        // Replace any existing edge into this exact target port (one connection per input).
+        _graph.Edges.RemoveAll(e => e.TargetNodeId == target.Id
+            && string.Equals(e.TargetPort, port, StringComparison.OrdinalIgnoreCase));
+
+        _graph.Edges.Add(new ScriptEdge
+        {
+            SourceNodeId = src.NodeId,
+            SourcePort = src.Port,
+            TargetNodeId = target.Id,
+            TargetPort = port
+        });
+        _pendingSource = null;
+        _saved = false;
+    }
+
+    private void RemoveEdge(ScriptEdge edge)
+    {
+        _graph.Edges.Remove(edge);
+        _saved = false;
+    }
+
+    private string GetSetting(string key) => _selected?.Settings.GetValueOrDefault(key) ?? "";
+
+    private void SetSetting(string key, string? value)
+    {
+        if (_selected is null) return;
+        _selected.Settings[key] = value ?? string.Empty;
+        _saved = false;
+    }
+
+    // Port centre coordinates for SVG edge rendering.
+    private (double X, double Y)? PortPos(string nodeId, string port, bool input)
+    {
+        var node = _graph.Nodes.FirstOrDefault(n => n.Id == nodeId);
+        if (node is null) return null;
+        var def = ScriptNodeTypes.Find(node.Type);
+        if (def is null) return null;
+        var list = input ? def.Inputs : def.Outputs;
+        var idx = list.ToList().FindIndex(p => string.Equals(p, port, StringComparison.OrdinalIgnoreCase));
+        if (idx < 0) return null;
+        var y = node.Y + HeaderH + PortTopPad + idx * PortRowH;
+        var x = input ? node.X : node.X + NodeWidth;
+        return (x, y);
+    }
+
+    private string? EdgePath(ScriptEdge edge)
+    {
+        var s = PortPos(edge.SourceNodeId, edge.SourcePort, input: false);
+        var t = PortPos(edge.TargetNodeId, edge.TargetPort, input: true);
+        if (s is null || t is null) return null;
+        var (sx, sy) = s.Value;
+        var (tx, ty) = t.Value;
+        var dx = Math.Max(40, Math.Abs(tx - sx) / 2);
+        return string.Format(Inv, "M {0} {1} C {2} {1}, {3} {4}, {5} {4}",
+            sx, sy, sx + dx, tx - dx, ty, tx);
+    }
+
+    private async Task Save()
+    {
+        if (_template is null) return;
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var tracked = await db.SessionTemplates.FindAsync(_template.Id);
+        if (tracked is not null)
+        {
+            tracked.GraphJson = _graph.ToJson();
+            await db.SaveChangesAsync();
+            _saved = true;
+        }
+    }
+
+    private void GoBack() => Nav.NavigateTo("/flow-templates");
+}

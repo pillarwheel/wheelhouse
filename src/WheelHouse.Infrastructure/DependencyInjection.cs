@@ -62,6 +62,9 @@ public static class DependencyInjection
         services.AddKeyedSingleton<ITaskOrchestrationService, AgentOrchestratorService>("ClaudeCode");
         services.AddScoped<ISessionFlowResolver, SessionFlowResolver>();
 
+        // Visual-scripting engine: executes a SessionTemplate's node graph.
+        services.AddScoped<IScriptExecutor, ScriptExecutor>();
+
         AddEmbeddings(services);
         AddVectorStore(services);
         services.AddScoped<IVectorSearchService, VectorSearchService>();

@@ -1,8 +1,10 @@
 @page "/session/{Id:int}"
 @using Microsoft.Extensions.DependencyInjection
 @using WheelHouse.Core.Search
+@using WheelHouse.Core.Models.Script
 @inject IDbContextFactory<WheelHouseDbContext> DbFactory
 @inject ISessionFlowResolver FlowResolver
+@inject IScriptExecutor ScriptExecutor
 @inject IGitService Git
 @inject IServiceScopeFactory ScopeFactory
 @inject IJSRuntime JS
@@ -37,6 +39,20 @@ else
             <p class="muted mono">@_session.RepositoryPath</p>
         </div>
         <div class="head-actions">
+            @if (_templates.Count > 0)
+            {
+                <select class="input flow-select" title="Flow template — which planning/execution services this session uses"
+                        value="@(_session.TemplateId?.ToString() ?? "")" @onchange="OnTemplateChanged">
+                    @if (_session.TemplateId is null)
+                    {
+                        <option value="" disabled selected>Flow: default</option>
+                    }
+                    @foreach (var t in _templates)
+                    {
+                        <option value="@t.Id">@t.Name</option>
+                    }
+                </select>
+            }
             <span class="status status-@_session.Status.ToString().ToLower()">@_session.Status</span>
             @if (_savedPath is not null)
             {
@@ -47,16 +63,43 @@ else
         </div>
     </header>
 
-    <section class="pipeline">
-        @foreach (var stage in PipelineStages())
-        {
-            <div class="pipe-node state-@stage.State.ToString().ToLower()">
-                <div class="pipe-dot">@(stage.State == StageState.Done ? "✓" : "")</div>
-                <div class="pipe-label">@stage.Label</div>
-                <div class="pipe-sub">@stage.Sub</div>
+    @if (HasGraph)
+    {
+        <section class="panel graph-panel">
+            <div class="panel-head">
+                <h2>Visual Script · @(_session.Template?.Name)</h2>
+                <button class="btn primary" @onclick="RunGraph" disabled="@_running">
+                    @(_running ? "Running…" : "Run graph")
+                </button>
             </div>
-        }
-    </section>
+            <ScriptGraphView GraphJson="_session.Template?.GraphJson" ActiveNodeId="_activeNodeId" />
+
+            @if (_pendingApproval is not null)
+            {
+                <div class="trouble approval">
+                    <div class="trouble-head">⏸ Approval required</div>
+                    <pre class="fix-text">@_pendingApproval</pre>
+                    <div class="row">
+                        <button class="btn primary" @onclick="() => ResolveApproval(true)">Approve</button>
+                        <button class="btn warn" @onclick="() => ResolveApproval(false)">Reject</button>
+                    </div>
+                </div>
+            }
+        </section>
+    }
+    else
+    {
+        <section class="pipeline">
+            @foreach (var stage in PipelineStages())
+            {
+                <div class="pipe-node state-@stage.State.ToString().ToLower()">
+                    <div class="pipe-dot">@(stage.State == StageState.Done ? "✓" : "")</div>
+                    <div class="pipe-label">@stage.Label</div>
+                    <div class="pipe-sub">@stage.Sub</div>
+                </div>
+            }
+        </section>
+    }
 
     <section class="split">
         <div class="panel plan-panel">
@@ -269,6 +312,7 @@ else
     [Parameter] public int Id { get; set; }
 
     private AgentSession? _session;
+    private List<SessionTemplate> _templates = new();
     private List<TaskItem> _tasks = new();
     private TaskItem? _selectedTask;
     private bool _editingTask;
@@ -288,6 +332,9 @@ else
     private readonly List<AgentStreamEvent> _events = new();
     private readonly List<AgentStreamEvent> _pending = new();
     private int? _currentTaskId;
+    private string? _activeNodeId;
+    private string? _pendingApproval;
+    private TaskCompletionSource<bool>? _approvalTcs;
     private string? _lastError;
     private string? _fix;
     private TaskItem? _fixTask;
@@ -301,11 +348,16 @@ else
     protected override async Task OnInitializedAsync()
     {
         await using var db = await DbFactory.CreateDbContextAsync();
-        _session = await db.Sessions.Include(s => s.Tasks).FirstOrDefaultAsync(s => s.Id == Id);
+        _session = await db.Sessions
+            .Include(s => s.Tasks)
+            .Include(s => s.Template)
+            .FirstOrDefaultAsync(s => s.Id == Id);
         _tasks = _session?.Tasks.OrderBy(t => t.Sequence).ToList() ?? new();
 
         if (_session is not null)
         {
+            _templates = await db.SessionTemplates.OrderBy(t => t.Id).ToListAsync();
+
             var saved = await db.SessionEvents.Where(e => e.AgentSessionId == Id)
                 .OrderBy(e => e.Id).ToListAsync();
             _events.AddRange(saved.Select(ToStreamEvent));
@@ -329,6 +381,21 @@ else
                 _recentCommits = [];
             }
         }
+    }
+
+    private async Task OnTemplateChanged(ChangeEventArgs e)
+    {
+        if (_session is null || !int.TryParse(e.Value as string, out var templateId)) return;
+
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var tracked = await db.Sessions.FindAsync(_session.Id);
+        if (tracked is null) return;
+        tracked.TemplateId = templateId;
+        await db.SaveChangesAsync();
+
+        // Mirror onto the in-memory session so the resolver picks the new flow immediately.
+        _session.TemplateId = templateId;
+        _session.Template = _templates.FirstOrDefault(t => t.Id == templateId);
     }
 
     private async Task RefreshGit()
@@ -585,6 +652,74 @@ else
         }
     }
 
+    // The session runs a visual node graph when its template carries one.
+    private bool HasGraph => !string.IsNullOrWhiteSpace(_session?.Template?.GraphJson);
+
+    private async Task RunGraph()
+    {
+        if (_session is null || _running) return;
+        _running = true;
+        _lastError = null;
+        _fix = null;
+        _activeNodeId = null;
+        _currentTaskId = null;
+        _cts = new CancellationTokenSource();
+        ScriptExecutor.ApprovalHandler = RequestApproval;
+        await SetSessionStatus(SessionStatus.Running);
+        try
+        {
+            await ScriptExecutor.RunGraphAsync(_session, GraphLog, GraphNodeActive, _cts.Token);
+            await SetSessionStatus(_lastError is null ? SessionStatus.Completed : SessionStatus.Failed);
+        }
+        catch (Exception ex)
+        {
+            Emit(new AgentStreamEvent(AgentEventKind.Error, ex.Message, IsError: true));
+            await SetSessionStatus(SessionStatus.Failed);
+        }
+        finally
+        {
+            ScriptExecutor.ApprovalHandler = null;
+            _pendingApproval = null;
+            _running = false;
+            _activeNodeId = null;
+            await FlushTranscript();
+            await LoadTasks(); // a generate-tasks node may have populated the list
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    // Human-in-the-loop gate: a wait-approval node calls this and blocks on the returned task
+    // until the user clicks Approve/Reject.
+    private Task<bool> RequestApproval(string message)
+    {
+        _approvalTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _pendingApproval = message;
+        _ = InvokeAsync(StateHasChanged);
+        return _approvalTcs.Task;
+    }
+
+    private void ResolveApproval(bool approved)
+    {
+        _pendingApproval = null;
+        _approvalTcs?.TrySetResult(approved);
+    }
+
+    // Parallel branches call these from background threads, so marshal the shared-state mutation
+    // onto the circuit's dispatcher to keep _events/_activeNodeId access serialized with rendering.
+    private void GraphLog(string text, AgentEventKind kind)
+        => _ = InvokeAsync(() =>
+        {
+            Emit(new AgentStreamEvent(kind, text, IsError: kind == AgentEventKind.Error));
+            StateHasChanged();
+        });
+
+    private void GraphNodeActive(string nodeId)
+        => _ = InvokeAsync(() =>
+        {
+            _activeNodeId = nodeId;
+            StateHasChanged();
+        });
+
     private Task RunFullPlan() => RunPlan(null);
 
     private async Task RunPlan(string? fixContext)
@@ -780,5 +915,9 @@ else
         _ => "·"
     };
 
-    public void Dispose() => _cts?.Cancel();
+    public void Dispose()
+    {
+        _approvalTcs?.TrySetResult(false); // unblock a waiting approval node on teardown
+        _cts?.Cancel();
+    }
 }

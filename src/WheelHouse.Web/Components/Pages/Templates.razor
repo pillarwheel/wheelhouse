@@ -202,13 +202,18 @@
         var ws = await db.Workspaces.FindAsync(_workspaceId.Value);
         if (ws is null) return;
 
+        var defaultTemplateId = await db.SessionTemplates
+            .Where(t => t.Name == "Default Agent Flow")
+            .Select(t => (int?)t.Id)
+            .FirstOrDefaultAsync();
         var session = new AgentSession
         {
             Name = $"{_selected.Name} · {DateTime.Now:MMM d HH:mm}",
             WorkspaceId = ws.Id,
             RepositoryPath = ws.AbsolutePath,
             Status = SessionStatus.Planning,
-            PlanningContext = _rendered
+            PlanningContext = _rendered,
+            TemplateId = defaultTemplateId
         };
         db.Sessions.Add(session);
         await db.SaveChangesAsync();

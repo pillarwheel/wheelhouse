@@ -13,4 +13,10 @@ public class SessionTemplate
     public string Description { get; set; } = string.Empty;
 
     public List<FlowStepConfiguration> Steps { get; set; } = new();
+
+    /// <summary>
+    /// Serialized JSON of the visual script graph (<see cref="Script.ScriptGraph"/>).
+    /// When non-empty, WheelHouse executes this node graph instead of the linear <see cref="Steps"/>.
+    /// </summary>
+    public string? GraphJson { get; set; }
 }

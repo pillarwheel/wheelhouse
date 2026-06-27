@@ -1,6 +1,7 @@
 @page "/flow-templates"
 @using Microsoft.EntityFrameworkCore
 @inject IDbContextFactory<WheelHouseDbContext> DbFactory
+@inject NavigationManager Nav
 
 <PageTitle>WheelHouse — Flow Templates</PageTitle>
 
@@ -70,11 +71,16 @@ else
                     </div>
                     <div class="card-actions">
                         <button class="btn ghost" @onclick="() => StartEdit(t)">Edit</button>
+                        <button class="btn ghost" @onclick="() => EditGraph(t)">Edit Script Graph</button>
                         @if (!t.Name.Equals("Default Agent Flow", StringComparison.Ordinal))
                         {
                             <button class="btn ghost warn" @onclick="() => Delete(t)">Delete</button>
                         }
                     </div>
+                    @if (!string.IsNullOrWhiteSpace(t.GraphJson))
+                    {
+                        <span class="tag ok">visual script</span>
+                    }
                 </div>
                 <div class="step-chips">
                     @foreach (var s in t.Steps)
@@ -125,6 +131,8 @@ else
         }).ToList();
         _saveError = null;
     }
+
+    private void EditGraph(SessionTemplate t) => Nav.NavigateTo($"/flow-editor/{t.Id}");
 
     private void AddStep() => _draftSteps.Add(new FlowStepConfiguration { ServiceName = "Gemini" });
 

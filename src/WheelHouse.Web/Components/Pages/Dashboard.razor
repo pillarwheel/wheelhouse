@@ -230,12 +230,17 @@
     private async Task StartSession(Workspace w)
     {
         await using var db = await DbFactory.CreateDbContextAsync();
+        var defaultTemplateId = await db.SessionTemplates
+            .Where(t => t.Name == "Default Agent Flow")
+            .Select(t => (int?)t.Id)
+            .FirstOrDefaultAsync();
         var session = new AgentSession
         {
             Name = $"Session · {DateTime.Now:MMM d HH:mm}",
             WorkspaceId = w.Id,
             RepositoryPath = w.AbsolutePath,
-            Status = SessionStatus.Planning
+            Status = SessionStatus.Planning,
+            TemplateId = defaultTemplateId
         };
         db.Sessions.Add(session);
         await db.SaveChangesAsync();
