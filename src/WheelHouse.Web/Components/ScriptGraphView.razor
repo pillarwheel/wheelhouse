@@ -1,0 +1,112 @@
+@using WheelHouse.Core.Models.Script
+
+@if (_graph.Nodes.Count == 0)
+{
+    <p class="muted">This template's visual script has no nodes yet.</p>
+}
+else
+{
+    <div class="flow-canvas-scroll readonly" style="height:@(Height)px">
+        <div class="flow-canvas">
+            <svg class="flow-edges" width="4000" height="2500">
+                @foreach (var edge in _graph.Edges)
+                {
+                    var d = EdgePath(edge);
+                    if (d is not null)
+                    {
+                        <path d="@d" class="flow-edge @(IsControlPort(edge.SourcePort) ? "control" : "data")" />
+                    }
+                }
+            </svg>
+
+            @foreach (var node in _graph.Nodes)
+            {
+                var def = ScriptNodeTypes.Find(node.Type);
+                <div class="flow-node readonly @(ActiveNodeId == node.Id ? "active" : "")"
+                     style="left:@(node.X.ToString(Inv))px; top:@(node.Y.ToString(Inv))px; width:@(NodeWidth)px;">
+                    <div class="flow-node-head">
+                        <span class="flow-node-title">@(string.IsNullOrWhiteSpace(node.Name) ? def?.Label ?? node.Type : node.Name)</span>
+                        <span class="flow-node-type">@node.Type</span>
+                    </div>
+                    <div class="flow-ports">
+                        <div class="flow-col flow-col-in">
+                            @foreach (var port in def?.Inputs ?? Array.Empty<string>())
+                            {
+                                <div class="flow-port flow-port-in">
+                                    <span class="flow-dot @(IsControlPort(port) ? "control" : "data")"></span>
+                                    <span class="flow-port-label">@port</span>
+                                </div>
+                            }
+                        </div>
+                        <div class="flow-col flow-col-out">
+                            @foreach (var port in def?.Outputs ?? Array.Empty<string>())
+                            {
+                                <div class="flow-port flow-port-out">
+                                    <span class="flow-port-label">@port</span>
+                                    <span class="flow-dot @(IsControlPort(port) ? "control" : "data")"></span>
+                                </div>
+                            }
+                        </div>
+                    </div>
+                </div>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    /// <summary>Serialized graph JSON (from the session template).</summary>
+    [Parameter] public string? GraphJson { get; set; }
+
+    /// <summary>Id of the node currently executing, highlighted with a glowing border.</summary>
+    [Parameter] public string? ActiveNodeId { get; set; }
+
+    /// <summary>Pixel height of the scroll viewport.</summary>
+    [Parameter] public int Height { get; set; } = 360;
+
+    private const int NodeWidth = 190;
+    private const int HeaderH = 30;
+    private const int PortTopPad = 18;
+    private const int PortRowH = 24;
+    private static readonly System.Globalization.CultureInfo Inv = System.Globalization.CultureInfo.InvariantCulture;
+
+    private ScriptGraph _graph = new();
+    private string? _lastJson;
+
+    protected override void OnParametersSet()
+    {
+        if (!ReferenceEquals(_lastJson, GraphJson) && _lastJson != GraphJson)
+        {
+            _graph = ScriptGraph.FromJson(GraphJson);
+            _lastJson = GraphJson;
+        }
+    }
+
+    private static bool IsControlPort(string port) => ScriptNodeTypes.IsControlPort(port);
+
+    private (double X, double Y)? PortPos(string nodeId, string port, bool input)
+    {
+        var node = _graph.Nodes.FirstOrDefault(n => n.Id == nodeId);
+        if (node is null) return null;
+        var def = ScriptNodeTypes.Find(node.Type);
+        if (def is null) return null;
+        var list = input ? def.Inputs : def.Outputs;
+        var idx = list.ToList().FindIndex(p => string.Equals(p, port, StringComparison.OrdinalIgnoreCase));
+        if (idx < 0) return null;
+        var y = node.Y + HeaderH + PortTopPad + idx * PortRowH;
+        var x = input ? node.X : node.X + NodeWidth;
+        return (x, y);
+    }
+
+    private string? EdgePath(ScriptEdge edge)
+    {
+        var s = PortPos(edge.SourceNodeId, edge.SourcePort, input: false);
+        var t = PortPos(edge.TargetNodeId, edge.TargetPort, input: true);
+        if (s is null || t is null) return null;
+        var (sx, sy) = s.Value;
+        var (tx, ty) = t.Value;
+        var dx = Math.Max(40, Math.Abs(tx - sx) / 2);
+        return string.Format(Inv, "M {0} {1} C {2} {1}, {3} {4}, {5} {4}",
+            sx, sy, sx + dx, tx - dx, ty, tx);
+    }
+}
