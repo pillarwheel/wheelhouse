@@ -15,6 +15,15 @@ recorded from one glassy dashboard — with optional token compression and fully
 
 ---
 
+## Documentation
+
+For step-by-step walkthroughs, navigation breadcrumbs, and deep-dive technical configurations, check out:
+* **[Comprehensive User & Developer Guide](file:///g:/Code/wheelhouse/docs/comprehensive_guide.md)** — Core walkthroughs for the Visual Scripting graph editor, Headroom troubleshooting, and GitOps syncer configuration.
+* **[Usage Guide & Walkthrough](file:///g:/Code/wheelhouse/docs/usage.md)** — Step-by-step guide to repository indexing, Gemini planning, task decomposition, and local execution.
+* **[Architectural Suggestions](file:///g:/Code/wheelhouse/docs/architectural_suggestions.md)** — Technical recommendations for local RAG optimization, multi-language code compression, and branch checkpoints.
+
+---
+
 ## What is it?
 
 WheelHouse orchestrates a two-model coding workflow on your own machine:
