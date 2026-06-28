@@ -26,6 +26,12 @@ public class TaskItem
     /// <summary>Captured output of the last verification run.</summary>
     public string? VerificationOutput { get; set; }
 
+    /// <summary>Assessed risk level of the task.</summary>
+    public RiskLevel Risk { get; set; } = RiskLevel.Low;
+
+    /// <summary>Comma-separated tags representing skills required for this task (e.g. "csharp,unit-test").</summary>
+    public string? SkillTags { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime? CompletedAt { get; set; }
 

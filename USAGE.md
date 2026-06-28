@@ -94,6 +94,26 @@ To keep your main branch clean:
 2. WheelHouse automatically spawns `wheelhouse/session-{id}`.
 3. If Claude makes mistakes, click **Discard changes** next to the troubleshooter to run `git restore .` instantly.
 
+### Filesystem-First State Synchronization (GitOps)
+* **Live Synchronization**: During session execution, WheelHouse dynamically updates files in the repository root's `.wheelhouse/` folder:
+  *   `.wheelhouse/plan.md`: The active planning context.
+  *   `.wheelhouse/tasks.md`: A live markdown task checklist with progress checkboxes (`[x]` for completed, `[/]` for in-progress/verifying, `[ ]` for pending, and `[!]` for failed).
+  *   `.wheelhouse/status.md`: Run metadata including session status, repository path, active task, and last updated time.
+
+### Rich Task Schema & Skill Badges
+* **Risk Levels**: Gemini automatically assesses risk levels (`Low`, `Medium`, `High`) for generated tasks, shown with color-coded badges in the UI. High-risk tasks are highlighted with warning borders.
+* **Skill Tags**: Tasks are annotated with relevant skill tags (e.g. `csharp`, `database`, `ui`) to help developers instantly understand the required expertise.
+
+### Compounding Lessons Learned Loop
+* **Durable Knowledge Base**: On successful session completion, WheelHouse compiles learnings, architectural decisions, and gotchas discovered during the run to `.wheelhouse/knowledge.md` in the repository.
+* **Auto-Feeding**: Subsequent planning sessions automatically read `.wheelhouse/knowledge.md` and inject its contents into the planning context, allowing future runs to benefit from previous experiences.
+
+### Manual Approval Gates
+* **High-Risk Verification Guardrails**: When a task marked as **High Risk** passes automated verification tests, the session execution pauses and transitions to `AwaitingApproval`. The developer is prompted to review the changes and click **Approve** or **Reject** before the runner proceeds.
+
+### Dynamic Task Decomposition
+* **Troubleshooting Breakdown**: If a task fails verification, developers can click **Decompose & Resolve**. Gemini will analyze the failure log and insert a sequence of smaller, targeted troubleshooting and recovery sub-tasks directly into the execution list to step-by-step resolve the bug.
+
 ---
 
 ## 4. Step-by-Step Developer Walkthrough

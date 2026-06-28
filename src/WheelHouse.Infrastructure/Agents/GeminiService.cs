@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using WheelHouse.Core.Interfaces;
 using WheelHouse.Core.Models;
+using WheelHouse.Core;
 
 namespace WheelHouse.Infrastructure.Agents;
 
@@ -18,9 +19,12 @@ namespace WheelHouse.Infrastructure.Agents;
 public class GeminiService : IGeminiService
 {
     private const string StablePreamble =
-        "You are the planning brain of WheelHouse, an autonomous coding-orchestration system. " +
-        "You produce precise, build-ready engineering guidance for a downstream coding agent (Claude Code). " +
-        "Always be concrete, reference file paths, and prefer verifiable steps.";
+        "You are the principal architect and planning brain of WheelHouse, a maximally capable, self-improving agentic operating system for computer-based work.\n" +
+        "Your long-term objective is to coordinate, perform, verify, and improve work across coding, operations, research, planning, and multi-step project execution.\n" +
+        "Always prioritize a working system, observable architectures, and a transparent file-first state model over beautiful descriptions or complex abstractions.\n" +
+        "Produce precise, build-ready engineering guidance for downstream coding agents (Claude Code).\n" +
+        "Focus on closing the loop: goal -> task graph -> execution -> verification -> memory update -> learning.\n" +
+        "Be concrete, reference file paths, and prefer verifiable steps.";
 
     private readonly HttpClient _http;
     private readonly GeminiOptions _options;
@@ -53,7 +57,11 @@ public class GeminiService : IGeminiService
     {
         var prompt =
             "Convert the following implementation plan into a JSON array of small, ordered tasks for a coding agent.\n" +
-            "Each item must be exactly: {\"title\":string,\"description\":string,\"verificationCommand\":string|null}.\n\n" +
+            "Each item must be exactly: {\"title\":string,\"description\":string,\"verificationCommand\":string|null,\"risk\":string,\"skillTags\":string[]}.\n\n" +
+            "Rules for risk:\n" +
+            "- Must be exactly one of: \"Low\", \"Medium\", or \"High\". Assess the risk based on the potential impact of changes.\n\n" +
+            "Rules for skillTags:\n" +
+            "- A JSON array of string tags representing the technologies, tools, or patterns involved (e.g. [\"csharp\", \"database\"], [\"typescript\", \"ui-style\"]).\n\n" +
             "Rules for verificationCommand (IMPORTANT — bad commands cause false failures):\n" +
             "- It runs from the repository ROOT in PowerShell on Windows and must exit 0 on success, non-zero on failure.\n" +
             "- Prefer a single command that BUILDS or TESTS the project to prove the work — e.g. `dotnet build`, " +
@@ -201,6 +209,24 @@ public class GeminiService : IGeminiService
             var seq = 0;
             foreach (var el in doc.RootElement.EnumerateArray())
             {
+                var riskStr = el.TryGetProperty("risk", out var r) ? r.GetString() : null;
+                var risk = Enum.TryParse<RiskLevel>(riskStr, true, out var parsedRisk) ? parsedRisk : RiskLevel.Low;
+
+                string? skillTags = null;
+                if (el.TryGetProperty("skillTags", out var s) && s.ValueKind == JsonValueKind.Array)
+                {
+                    var tags = new List<string>();
+                    foreach (var tagEl in s.EnumerateArray())
+                    {
+                        var tag = tagEl.GetString();
+                        if (!string.IsNullOrWhiteSpace(tag)) tags.Add(tag.Trim().ToLowerInvariant());
+                    }
+                    if (tags.Count > 0)
+                    {
+                        skillTags = string.Join(",", tags);
+                    }
+                }
+
                 list.Add(new TaskItem
                 {
                     Sequence = seq++,
@@ -209,7 +235,9 @@ public class GeminiService : IGeminiService
                     VerificationCommand = el.TryGetProperty("verificationCommand", out var v) &&
                                           v.ValueKind == JsonValueKind.String
                         ? v.GetString()
-                        : null
+                        : null,
+                    Risk = risk,
+                    SkillTags = skillTags
                 });
             }
             return list;

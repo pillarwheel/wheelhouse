@@ -8,6 +8,7 @@
 @inject IGitService Git
 @inject IServiceScopeFactory ScopeFactory
 @inject IJSRuntime JS
+@inject IWorkspaceStateSyncService StateSync
 @implements IDisposable
 
 <PageTitle>WheelHouse — Session</PageTitle>
@@ -199,11 +200,17 @@ else
                     <div class="task-card-list">
                         @foreach (var t in _tasks)
                         {
-                            <div class="task-card @(_selectedTask?.Id == t.Id ? "selected" : "")"
+                            <div class="task-card @(_selectedTask?.Id == t.Id ? "selected" : "") @(t.Risk == RiskLevel.High ? "risk-high-border" : "")"
                                  @onclick="() => SelectTask(t)">
                                 <span class="task-dot status-@t.Status.ToString().ToLower()"></span>
                                 <div class="task-card-main">
-                                    <div class="task-title">@(t.Sequence + 1). @t.Title</div>
+                                    <div class="task-title">
+                                        @(t.Sequence + 1). @t.Title
+                                        @if (t.Risk != RiskLevel.Low)
+                                        {
+                                            <span class="badge badge-risk-@t.Risk.ToString().ToLower() ml-2">@t.Risk Risk</span>
+                                        }
+                                    </div>
                                     <div class="task-sub">
                                         <span class="status status-@t.Status.ToString().ToLower()">@t.Status</span>
                                         @if (!string.IsNullOrWhiteSpace(t.VerificationCommand))
@@ -211,6 +218,15 @@ else
                                             <code class="verify-cmd">@t.VerificationCommand</code>
                                         }
                                     </div>
+                                    @if (!string.IsNullOrWhiteSpace(t.SkillTags))
+                                    {
+                                        <div class="task-tags">
+                                            @foreach (var tag in t.SkillTags.Split(',', StringSplitOptions.RemoveEmptyEntries))
+                                            {
+                                                <span class="badge tag">@tag</span>
+                                            }
+                                        </div>
+                                    }
                                 </div>
                             </div>
                         }
@@ -243,11 +259,26 @@ else
                         else
                         {
                             <div class="title-row">
-                                <h3>@_selectedTask.Title</h3>
+                                <h3>
+                                    @_selectedTask.Title
+                                    @if (_selectedTask.Risk != RiskLevel.Low)
+                                    {
+                                        <span class="badge badge-risk-@_selectedTask.Risk.ToString().ToLower() ml-2">@_selectedTask.Risk Risk</span>
+                                    }
+                                </h3>
                                 <button class="btn ghost icon-btn" title="Edit task"
                                         @onclick="StartEditTask" disabled="@_running">✎</button>
                             </div>
                             <p class="muted">@_selectedTask.Description</p>
+                            @if (!string.IsNullOrWhiteSpace(_selectedTask.SkillTags))
+                            {
+                                <div class="task-tags mb-3">
+                                    @foreach (var tag in _selectedTask.SkillTags.Split(',', StringSplitOptions.RemoveEmptyEntries))
+                                    {
+                                        <span class="badge tag">@tag</span>
+                                    }
+                                </div>
+                            }
                             @if (!string.IsNullOrWhiteSpace(_selectedTask.VerificationCommand))
                             {
                                 <div class="verify-line">Verify: <code>@_selectedTask.VerificationCommand</code></div>
@@ -264,9 +295,14 @@ else
                             <pre class="plan-text">@_selectedTask.VerificationOutput</pre>
                             @if (_selectedTask.Status == WorkItemStatus.Failed)
                             {
-                                <button class="btn warn" @onclick="() => TroubleshootTask(_selectedTask)" disabled="@_troubleshooting">
-                                    @(_troubleshooting ? "Asking Gemini…" : "Ask Gemini for a fix")
-                                </button>
+                                <div class="row gap-2" style="margin-top: 10px;">
+                                    <button class="btn warn" @onclick="() => TroubleshootTask(_selectedTask)" disabled="@_troubleshooting">
+                                        @(_troubleshooting ? "Asking Gemini…" : "Ask Gemini for a fix")
+                                    </button>
+                                    <button class="btn primary" @onclick="() => DecomposeAndResolveTask(_selectedTask)" disabled="@_decomposing">
+                                        @(_decomposing ? "Decomposing…" : "Decompose & Resolve")
+                                    </button>
+                                </div>
                             }
                         }
                     </div>
@@ -350,7 +386,7 @@ else
     private string _taskDescDraft = "";
     private string _taskVerifyDraft = "";
     private string _goal = "";
-    private bool _planning, _running, _troubleshooting, _generatingTasks;
+    private bool _planning, _running, _troubleshooting, _generatingTasks, _decomposing;
     private bool _editingName;
     private string _nameDraft = "";
     private int _ragSnippetCount;
@@ -580,7 +616,12 @@ else
 
             await using var db = await DbFactory.CreateDbContextAsync();
             var tracked = await db.Sessions.FindAsync(_session.Id);
-            if (tracked is not null) { tracked.PlanningContext = plan; await db.SaveChangesAsync(); }
+            if (tracked is not null)
+            {
+                tracked.PlanningContext = plan;
+                await db.SaveChangesAsync();
+                await StateSync.SyncActiveSessionAsync(_session.Id, _session.RepositoryPath);
+            }
         }
         finally { _planning = false; }
     }
@@ -591,18 +632,33 @@ else
         if (_session is null || string.IsNullOrWhiteSpace(_goal))
             return $"Repository: {_session?.RepositoryPath}";
 
+        string knowledgeContext = "";
+        try
+        {
+            var knowledgePath = Path.Combine(_session.RepositoryPath, ".wheelhouse", "knowledge.md");
+            if (File.Exists(knowledgePath))
+            {
+                var content = await File.ReadAllTextAsync(knowledgePath);
+                if (!string.IsNullOrWhiteSpace(content))
+                {
+                    knowledgeContext = $"## Previous repository knowledge / Lessons learned:\n{content}\n\n";
+                }
+            }
+        }
+        catch { /* ignore file read errors */ }
+
         try
         {
             await using var scope = ScopeFactory.CreateAsyncScope();
             var search = scope.ServiceProvider.GetRequiredService<IVectorSearchService>();
             var hits = await search.SearchAsync(_goal, topN: 5, repositoryPath: _session.RepositoryPath);
             _ragSnippetCount = hits.Count;
-            return RagContext.Build(_session.RepositoryPath, hits);
+            return knowledgeContext + RagContext.Build(_session.RepositoryPath, hits);
         }
         catch
         {
             // Repo not indexed / no embedding provider — fall back to a path-only context.
-            return $"Repository: {_session.RepositoryPath}";
+            return knowledgeContext + $"Repository: {_session.RepositoryPath}";
         }
     }
 
@@ -634,6 +690,7 @@ else
             await db.SaveChangesAsync();
             await LoadTasks();
             _selectedTask = _tasks.FirstOrDefault();
+            await StateSync.SyncActiveSessionAsync(_session.Id, _session.RepositoryPath);
         }
         finally { _generatingTasks = false; }
     }
@@ -830,8 +887,25 @@ else
                 task.VerificationCommand, _session.RepositoryPath);
             var passed = exitCode == 0;
             task.VerificationOutput = $"$ {task.VerificationCommand}\n(exit {exitCode})\n\n{output}";
-            task.Status = passed ? WorkItemStatus.Completed : WorkItemStatus.Failed;
-            if (passed) task.CompletedAt = DateTime.UtcNow;
+            
+            if (passed && task.Risk == RiskLevel.High)
+            {
+                task.Status = WorkItemStatus.AwaitingApproval;
+                await SaveTask(task);
+                Emit(new AgentStreamEvent(AgentEventKind.System, $"Verification passed. Awaiting human approval for High-Risk task: {task.Title}"));
+                await InvokeAsync(StateHasChanged);
+
+                var approved = await RequestApproval($"High-Risk Task '{task.Title}' passed verification. Do you approve the changes?");
+                
+                task.Status = approved ? WorkItemStatus.Completed : WorkItemStatus.Failed;
+                if (approved) task.CompletedAt = DateTime.UtcNow;
+                passed = approved;
+            }
+            else
+            {
+                task.Status = passed ? WorkItemStatus.Completed : WorkItemStatus.Failed;
+                if (passed) task.CompletedAt = DateTime.UtcNow;
+            }
             await SaveTask(task);
 
             Emit(new AgentStreamEvent(
@@ -919,6 +993,7 @@ else
         tracked.VerificationOutput = task.VerificationOutput;
         tracked.CompletedAt = task.CompletedAt;
         await db.SaveChangesAsync();
+        await StateSync.SyncActiveSessionAsync(_session!.Id, _session.RepositoryPath);
     }
 
     private async Task SetSessionStatus(SessionStatus status)
@@ -933,7 +1008,193 @@ else
             if (status is SessionStatus.Completed or SessionStatus.Failed)
                 tracked.CompletedAt = DateTime.UtcNow;
             await db.SaveChangesAsync();
+            await StateSync.SyncActiveSessionAsync(_session.Id, _session.RepositoryPath);
+
+            if (status == SessionStatus.Completed)
+            {
+                // Trigger compounding lessons learned loop in background
+                _ = Task.Run(async () => await RunLessonsLearnedLoop());
+            }
         }
+    }
+
+    private async Task RunLessonsLearnedLoop()
+    {
+        try
+        {
+            await using var scope = ScopeFactory.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<WheelHouseDbContext>();
+            var gemini = scope.ServiceProvider.GetRequiredService<IGeminiService>();
+            
+            var session = await db.Sessions.FindAsync(_session!.Id);
+            if (session is null) return;
+            
+            var tasks = await db.Tasks.Where(t => t.AgentSessionId == session.Id)
+                .OrderBy(t => t.Sequence).ToListAsync();
+
+            var tasksSummary = new System.Text.StringBuilder();
+            foreach (var t in tasks)
+            {
+                tasksSummary.AppendLine($"- Task: {t.Title}");
+                tasksSummary.AppendLine($"  Status: {t.Status}");
+                if (!string.IsNullOrWhiteSpace(t.VerificationOutput))
+                {
+                    tasksSummary.AppendLine($"  Verification Output:\n{t.VerificationOutput}");
+                }
+            }
+
+            var existingKnowledge = "";
+            var knowledgeDir = Path.Combine(session.RepositoryPath, ".wheelhouse");
+            var knowledgePath = Path.Combine(knowledgeDir, "knowledge.md");
+            if (File.Exists(knowledgePath))
+            {
+                existingKnowledge = await File.ReadAllTextAsync(knowledgePath);
+            }
+
+            var prompt = 
+                $"You are the planning brain of WheelHouse. A coding session has just completed successfully.\n\n" +
+                $"Goal: {_goal}\n\n" +
+                $"Original Plan:\n{session.PlanningContext}\n\n" +
+                $"Executed Tasks:\n{tasksSummary}\n\n";
+
+            if (!string.IsNullOrWhiteSpace(existingKnowledge))
+            {
+                prompt += $"Existing Knowledge/Lessons Learned in this repository:\n{existingKnowledge}\n\n" +
+                          $"Synthesize a consolidated, updated version of 'Lessons Learned' about this codebase, merging the existing knowledge with new learnings from this session.\n";
+            }
+            else
+            {
+                prompt += $"Synthesize a short, durable markdown summary of 'Lessons Learned' about this codebase for future runs.\n";
+            }
+
+            prompt += 
+                $"Focus on architectural patterns used, specific gotchas, database schema details, API design, or config requirements discovered.\n" +
+                $"Keep it concise and actionable for another AI agent entering this repo.\n" +
+                $"Do not output any conversational introduction or conclusion. Return ONLY the markdown contents.";
+
+            var reply = await gemini.CompleteAsync(prompt);
+            if (!string.IsNullOrWhiteSpace(reply) && !reply.Contains("request failed") && !reply.Contains("not configured"))
+            {
+                Directory.CreateDirectory(knowledgeDir);
+                await File.WriteAllTextAsync(knowledgePath, reply, System.Text.Encoding.UTF8);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("Error running lessons learned loop: " + ex.Message);
+        }
+    }
+
+    private async Task DecomposeAndResolveTask(TaskItem task)
+    {
+        if (_session is null || _decomposing) return;
+        _decomposing = true;
+        try
+        {
+            await using var scope = ScopeFactory.CreateAsyncScope();
+            var gemini = scope.ServiceProvider.GetRequiredService<IGeminiService>();
+
+            var prompt =
+                $"You are the planning brain of WheelHouse. A task has failed verification.\n\n" +
+                $"Failed Task: {task.Title}\n" +
+                $"Description: {task.Description}\n" +
+                $"Verification Command: `{task.VerificationCommand}`\n\n" +
+                $"## Verification Output:\n```\n{task.VerificationOutput}\n```\n\n" +
+                $"## Repository context:\n{_session.RepositoryPath}\n\n" +
+                $"Decompose this failure into a sequence of small, concrete corrective tasks to isolate and fix the problem.\n" +
+                $"Each task must be actionable by a downstream coding agent (Claude Code).\n" +
+                $"Each item must be exactly: {{\"title\":string,\"description\":string,\"verificationCommand\":string|null,\"risk\":string,\"skillTags\":string[]}}.\n\n" +
+                $"Rules for risk:\n" +
+                $"- Must be exactly one of: \"Low\", \"Medium\", or \"High\". Assess the risk based on the potential impact of changes.\n\n" +
+                $"Rules for skillTags:\n" +
+                $"- A JSON array of string tags representing the technologies, tools, or patterns involved.\n\n" +
+                $"Rules for verificationCommand:\n" +
+                $"- Must exit 0 on success, non-zero on failure from repository root.\n" +
+                $"- Use build/test commands to prove the sub-task works (e.g. `dotnet build`, `dotnet test`).\n\n" +
+                $"Return ONLY the JSON array of sub-tasks.";
+
+            var reply = await gemini.CompleteAsync(prompt);
+            var subTasks = ParseSubTasks(reply);
+            if (subTasks.Count == 0) return;
+
+            await using var db = await DbFactory.CreateDbContextAsync();
+            var subsequentTasks = await db.Tasks
+                .Where(t => t.AgentSessionId == _session.Id && t.Sequence > task.Sequence)
+                .ToListAsync();
+
+            foreach (var t in subsequentTasks)
+            {
+                t.Sequence += subTasks.Count;
+            }
+
+            var nextSeq = task.Sequence + 1;
+            foreach (var st in subTasks)
+            {
+                st.AgentSessionId = _session.Id;
+                st.Sequence = nextSeq++;
+                db.Tasks.Add(st);
+            }
+
+            await db.SaveChangesAsync();
+            await LoadTasks();
+            await StateSync.SyncActiveSessionAsync(_session.Id, _session.RepositoryPath);
+            
+            _selectedTask = _tasks.FirstOrDefault(t => t.Sequence == task.Sequence + 1);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("Error decomposing task: " + ex.Message);
+        }
+        finally
+        {
+            _decomposing = false;
+        }
+    }
+
+    private IReadOnlyList<TaskItem> ParseSubTasks(string raw)
+    {
+        var start = raw.IndexOf('[');
+        var end = raw.LastIndexOf(']');
+        if (start < 0 || end <= start) return Array.Empty<TaskItem>();
+        var json = raw.Substring(start, end - start + 1);
+
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            var list = new List<TaskItem>();
+            foreach (var el in doc.RootElement.EnumerateArray())
+            {
+                var riskStr = el.TryGetProperty("risk", out var r) ? r.GetString() : null;
+                var risk = Enum.TryParse<RiskLevel>(riskStr, true, out var parsedRisk) ? parsedRisk : RiskLevel.Low;
+
+                string? skillTags = null;
+                if (el.TryGetProperty("skillTags", out var s) && s.ValueKind == System.Text.Json.JsonValueKind.Array)
+                {
+                    var tags = new List<string>();
+                    foreach (var tagEl in s.EnumerateArray())
+                    {
+                        var tag = tagEl.GetString();
+                        if (!string.IsNullOrWhiteSpace(tag)) tags.Add(tag.Trim().ToLowerInvariant());
+                    }
+                    if (tags.Count > 0) skillTags = string.Join(",", tags);
+                }
+
+                list.Add(new TaskItem
+                {
+                    Title = el.TryGetProperty("title", out var t) ? t.GetString() ?? "" : "",
+                    Description = el.TryGetProperty("description", out var d) ? d.GetString() ?? "" : "",
+                    VerificationCommand = el.TryGetProperty("verificationCommand", out var v) &&
+                                          v.ValueKind == System.Text.Json.JsonValueKind.String
+                        ? v.GetString()
+                        : null,
+                    Risk = risk,
+                    SkillTags = skillTags,
+                    Status = WorkItemStatus.Pending
+                });
+            }
+            return list;
+        }
+        catch { return Array.Empty<TaskItem>(); }
     }
 
     private static string KindLabel(AgentEventKind k) => k switch

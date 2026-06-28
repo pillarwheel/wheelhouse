@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using WheelHouse.Infrastructure.Persistence;
 
@@ -10,9 +11,11 @@ using WheelHouse.Infrastructure.Persistence;
 namespace WheelHouse.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(WheelHouseDbContext))]
-    partial class WheelHouseDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260628183845_AddTaskRichSchema")]
+    partial class AddTaskRichSchema
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "8.0.11");

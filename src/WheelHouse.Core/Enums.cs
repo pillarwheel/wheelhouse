@@ -19,6 +19,7 @@ public enum WorkItemStatus
     Pending,
     InProgress,
     Verifying,
+    AwaitingApproval,
     Completed,
     Failed
 }
@@ -49,4 +50,12 @@ public enum IndexState
     Indexed,
     Failed,
     Unavailable
+}
+
+/// <summary>Assessed risk level of a task.</summary>
+public enum RiskLevel
+{
+    Low,
+    Medium,
+    High
 }

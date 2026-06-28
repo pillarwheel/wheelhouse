@@ -445,3 +445,58 @@ textarea.input { resize: vertical; font-family: inherit; }
 .kpi-val { font-weight: 600; font-variant-numeric: tabular-nums; }
 .kpi-val.ok { color: var(--green); }
 .kpi-val.warn { color: var(--amber); }
+
+/* MCASP Rich Task Badges and Tags */
+.badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 7px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1;
+    text-transform: uppercase;
+}
+.badge-risk-low {
+    background: rgba(46, 204, 113, 0.15);
+    color: #2ecc71;
+}
+.badge-risk-medium {
+    background: rgba(241, 196, 15, 0.15);
+    color: #f1c40f;
+}
+.badge-risk-high {
+    background: rgba(231, 76, 60, 0.15);
+    color: #e74c3c;
+}
+.task-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 6px;
+}
+.tag {
+    background: rgba(138, 43, 226, 0.12);
+    color: #a855f7;
+    font-size: 10px;
+    text-transform: none;
+}
+.risk-high-border {
+    border-color: rgba(231, 76, 60, 0.4);
+}
+.risk-high-border:hover {
+    border-color: rgba(231, 76, 60, 0.7);
+}
+
+.approval-card {
+    padding: 14px 16px;
+    border-radius: 10px;
+    background: rgba(241, 196, 15, 0.08);
+    border: 1px solid rgba(241, 196, 15, 0.3);
+    margin-top: 12px;
+    margin-bottom: 12px;
+}
+.approval-card h4 {
+    margin: 0 0 6px 0;
+    font-size: 13.5px;
+}

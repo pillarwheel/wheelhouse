@@ -56,6 +56,7 @@ public static class DependencyInjection
         services.AddSingleton<IGitService, GitService>();
         services.AddSingleton<IWorkspaceIndexQueue, WorkspaceIndexQueue>();
         services.AddHostedService<WorkspaceIndexingService>();
+        services.AddScoped<IWorkspaceStateSyncService, WorkspaceStateSyncService>();
 
         // Template-driven flow: keyed implementations + resolver
         services.AddKeyedScoped<IPlanningService, GeminiPlanningService>("Gemini");
