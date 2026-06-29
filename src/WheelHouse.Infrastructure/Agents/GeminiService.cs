@@ -48,7 +48,17 @@ public class GeminiService : IGeminiService
         var prompt =
             $"## Repository context\n{repositoryContext}\n\n" +
             $"## Goal\n{goal}\n\n" +
-            "Produce a concise markdown implementation plan: numbered steps, files to touch, and risks.";
+            "Produce a concise, build-ready markdown implementation plan for a downstream coding agent. " +
+            "Close the loop: every step must be executable and verifiable. Use exactly these sections:\n" +
+            "1. **Objective** — one sentence on the outcome.\n" +
+            "2. **Context Summary** — only what is needed from the repository context above; reference concrete file paths.\n" +
+            "3. **Implementation Steps** — numbered, ordered, each naming the files to touch and the change to make.\n" +
+            "4. **Verification Criteria** — for each step or for the plan, the exact build/test command that proves success " +
+            "(prefer `dotnet build` / `dotnet test`); no guessed file-existence checks.\n" +
+            "5. **Risks & Mitigations** — what could break and how to contain it; flag anything High risk.\n" +
+            "6. **Open Questions** — anything ambiguous that should be confirmed before risky changes.\n" +
+            "7. **Next / Blocked** — the immediate next action after this plan, and anything blocking progress.\n\n" +
+            "Prefer transparent, file-first changes and reversible steps. Be concrete over comprehensive.";
         return await GenerateAsync(prompt, cancellationToken);
     }
 

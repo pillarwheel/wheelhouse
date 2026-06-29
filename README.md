@@ -18,9 +18,9 @@ recorded from one glassy dashboard — with optional token compression and fully
 ## Documentation
 
 For step-by-step walkthroughs, navigation breadcrumbs, and deep-dive technical configurations, check out:
-* **[Comprehensive User & Developer Guide](file:///g:/Code/wheelhouse/docs/comprehensive_guide.md)** — Core walkthroughs for the Visual Scripting graph editor, Headroom troubleshooting, and GitOps syncer configuration.
-* **[Usage Guide & Walkthrough](file:///g:/Code/wheelhouse/docs/usage.md)** — Step-by-step guide to repository indexing, Gemini planning, task decomposition, and local execution.
-* **[Architectural Suggestions](file:///g:/Code/wheelhouse/docs/architectural_suggestions.md)** — Technical recommendations for local RAG optimization, multi-language code compression, and branch checkpoints.
+* **[Comprehensive User & Developer Guide](docs/comprehensive_guide.md)** — Core walkthroughs for the Visual Scripting graph editor, Headroom troubleshooting, and GitOps syncer configuration.
+* **[Usage Guide & Walkthrough](docs/usage.md)** — Step-by-step guide to repository indexing, Gemini planning, task decomposition, and local execution.
+* **[Architectural Suggestions](docs/architectural_suggestions.md)** — Shipped milestones plus the active backlog for local RAG optimization, multi-language code compression, and branch checkpoints.
 
 ---
 
@@ -62,7 +62,7 @@ cd wheelhouse
 cp .env.example .env          # then fill in keys (see Configuration)
 
 dotnet build
-dotnet test                   # 54 offline tests
+dotnet test                   # 89 offline tests
 
 # Desktop app (native window):
 dotnet run --project src/WheelHouse.Desktop
@@ -128,7 +128,7 @@ Schema changes go through EF migrations (applied on startup), so updates never d
 
 ## Testing
 ```bash
-dotnet test                                   # 54 fast, offline tests
+dotnet test                                   # 89 fast, offline tests
 WHEELHOUSE_LIVE_TESTS=1 dotnet test           # also runs gated live API tests (needs keys/login)
 ```
 

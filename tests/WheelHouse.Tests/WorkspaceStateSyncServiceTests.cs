@@ -118,4 +118,71 @@ public class WorkspaceStateSyncServiceTests : IDisposable
         Assert.Contains("**Status**: Running", statusContent);
         Assert.Contains("**Active Task**: **Task 2**", statusContent);
     }
+
+    [Fact]
+    public async Task SyncActiveSession_WritesRichSchemaAndHandoffQueues()
+    {
+        // Arrange
+        var ws = new Workspace { Name = "Test WS", AbsolutePath = _tempRepoDir };
+        _db.Workspaces.Add(ws);
+        await _db.SaveChangesAsync();
+
+        var session = new AgentSession
+        {
+            Name = "Momentum Session",
+            WorkspaceId = ws.Id,
+            RepositoryPath = _tempRepoDir,
+            Status = SessionStatus.Running
+        };
+        _db.Sessions.Add(session);
+        await _db.SaveChangesAsync();
+
+        _db.Tasks.AddRange(
+            new TaskItem
+            {
+                AgentSessionId = session.Id, Sequence = 0, Title = "Migrate schema",
+                Risk = RiskLevel.High, SkillTags = "csharp,database",
+                Status = WorkItemStatus.AwaitingApproval
+            },
+            new TaskItem
+            {
+                AgentSessionId = session.Id, Sequence = 1, Title = "Active work",
+                Status = WorkItemStatus.InProgress
+            },
+            new TaskItem
+            {
+                AgentSessionId = session.Id, Sequence = 2, Title = "Pending work",
+                Status = WorkItemStatus.Pending
+            },
+            new TaskItem
+            {
+                AgentSessionId = session.Id, Sequence = 3, Title = "Broken work",
+                Status = WorkItemStatus.Failed
+            });
+        await _db.SaveChangesAsync();
+
+        var syncService = new WorkspaceStateSyncService(_db, NullLogger<WorkspaceStateSyncService>.Instance);
+
+        // Act
+        await syncService.SyncActiveSessionAsync(session.Id, _tempRepoDir);
+
+        // Assert: rich schema surfaces in tasks.md
+        var dotWheelhouse = Path.Combine(_tempRepoDir, ".wheelhouse");
+        var tasksContent = await File.ReadAllTextAsync(Path.Combine(dotWheelhouse, "tasks.md"));
+        Assert.Contains("_High risk_", tasksContent);
+        Assert.Contains("*Skills*: csharp,database", tasksContent);
+
+        // Assert: handoff.md groups tasks into momentum queues
+        var handoffFile = Path.Combine(dotWheelhouse, "handoff.md");
+        Assert.True(File.Exists(handoffFile));
+        var handoff = await File.ReadAllTextAsync(handoffFile);
+        Assert.Contains("## Now (active)", handoff);
+        Assert.Contains("Active work", handoff);
+        Assert.Contains("## Next (ready)", handoff);
+        Assert.Contains("Pending work", handoff);
+        Assert.Contains("## Awaiting approval", handoff);
+        Assert.Contains("Migrate schema", handoff);
+        Assert.Contains("## Blocked (failed)", handoff);
+        Assert.Contains("Broken work", handoff);
+    }
 }

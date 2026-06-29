@@ -80,10 +80,15 @@ public class WorkspaceStateSyncService : IWorkspaceStateSyncService
                         _ => "[ ]"
                     };
 
-                    tasksContent.AppendLine($"- {checkbox} **{task.Title}** ({task.Status})");
+                    var riskTag = task.Risk != RiskLevel.Low ? $" — _{task.Risk} risk_" : "";
+                    tasksContent.AppendLine($"- {checkbox} **{task.Title}** ({task.Status}){riskTag}");
                     if (!string.IsNullOrWhiteSpace(task.Description))
                     {
                         tasksContent.AppendLine($"  - *Description*: {task.Description}");
+                    }
+                    if (!string.IsNullOrWhiteSpace(task.SkillTags))
+                    {
+                        tasksContent.AppendLine($"  - *Skills*: {task.SkillTags}");
                     }
                     if (!string.IsNullOrWhiteSpace(task.VerificationCommand))
                     {
@@ -125,6 +130,55 @@ public class WorkspaceStateSyncService : IWorkspaceStateSyncService
             statusContent.AppendLine($"- **Last Updated**: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
 
             await File.WriteAllTextAsync(statusPath, statusContent.ToString(), Encoding.UTF8, cancellationToken);
+
+            // 4. Sync handoff.md — momentum queues so any compatible agent can continue
+            //    from the folder alone (now / next / blocked / awaiting-approval).
+            var handoffPath = Path.Combine(dotWheelhouseDir, "handoff.md");
+            var handoff = new StringBuilder();
+            handoff.AppendLine("# Handoff");
+            handoff.AppendLine();
+            handoff.AppendLine($"_Goal_: {session.Name}");
+            handoff.AppendLine($"_Session status_: {session.Status} · _Last updated_: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+            handoff.AppendLine();
+
+            void AppendQueue(string heading, IEnumerable<TaskItem> items, string emptyText)
+            {
+                handoff.AppendLine($"## {heading}");
+                var any = false;
+                foreach (var t in items)
+                {
+                    any = true;
+                    var risk = t.Risk != RiskLevel.Low ? $" ({t.Risk} risk)" : "";
+                    handoff.AppendLine($"- **{t.Title}**{risk}");
+                }
+                if (!any) handoff.AppendLine($"_{emptyText}_");
+                handoff.AppendLine();
+            }
+
+            AppendQueue("Now (active)",
+                tasks.Where(t => t.Status is WorkItemStatus.InProgress or WorkItemStatus.Verifying),
+                "Nothing in progress.");
+            AppendQueue("Next (ready)",
+                tasks.Where(t => t.Status == WorkItemStatus.Pending),
+                "No pending tasks.");
+            AppendQueue("Awaiting approval",
+                tasks.Where(t => t.Status == WorkItemStatus.AwaitingApproval),
+                "None waiting on a human.");
+            AppendQueue("Blocked (failed)",
+                tasks.Where(t => t.Status == WorkItemStatus.Failed),
+                "No failed tasks.");
+
+            handoff.AppendLine("## Continuation");
+            if (activeTask is not null)
+                handoff.AppendLine($"Resume the active task **{activeTask.Title}**, then proceed through the Next queue in order.");
+            else if (tasks.Any(t => t.Status == WorkItemStatus.Pending))
+                handoff.AppendLine("Start the first task in the Next queue.");
+            else if (tasks.Any(t => t.Status == WorkItemStatus.AwaitingApproval))
+                handoff.AppendLine("A human approval is required before continuing.");
+            else
+                handoff.AppendLine("No outstanding tasks. Review `knowledge.md` and define the next milestone.");
+
+            await File.WriteAllTextAsync(handoffPath, handoff.ToString(), Encoding.UTF8, cancellationToken);
 
             _logger.LogInformation("Successfully synchronized session {SessionId} state to {Dir}", sessionId, dotWheelhouseDir);
         }

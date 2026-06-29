@@ -39,6 +39,14 @@ public class CosineVectorStore : IVectorStore
         }
     }
 
+    public async Task<IReadOnlyList<string>> GetIndexedFilesAsync(
+        string repositoryPath, CancellationToken cancellationToken = default)
+        => await _db.CodeIndex
+            .Where(c => c.RepositoryPath == repositoryPath)
+            .Select(c => c.FilePath)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+
     public async Task<IReadOnlyList<CodeSearchResult>> SearchAsync(
         float[] queryVector, int topN, string? repositoryPath, CancellationToken cancellationToken = default)
     {

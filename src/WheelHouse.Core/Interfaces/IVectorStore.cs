@@ -17,6 +17,9 @@ public interface IVectorStore
     /// <summary>Removes any stored vectors for a given file.</summary>
     Task DeleteByFileAsync(string repositoryPath, string filePath, CancellationToken cancellationToken = default);
 
+    /// <summary>Returns the distinct file paths currently indexed for a repository.</summary>
+    Task<IReadOnlyList<string>> GetIndexedFilesAsync(string repositoryPath, CancellationToken cancellationToken = default);
+
     /// <summary>Returns the top-N nearest snippets to <paramref name="queryVector"/>.</summary>
     Task<IReadOnlyList<CodeSearchResult>> SearchAsync(
         float[] queryVector,

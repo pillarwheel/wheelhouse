@@ -92,6 +92,11 @@ public class ClaudeCliService : IAgentOrchestrator
                 ? $"Started claude via Headroom (context compression on) in {request.WorkingDirectory}"
                 : $"Started claude in {request.WorkingDirectory}");
 
+        // Drain stderr concurrently: if we only read it after the stdout loop, a child that
+        // fills the (~4 KB) stderr pipe buffer before closing stdout would block on the write
+        // while we block reading stdout — a classic redirect deadlock.
+        var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
+
         string? line;
         while ((line = await process.StandardOutput.ReadLineAsync().WaitAsync(cancellationToken)) != null)
         {
@@ -100,7 +105,8 @@ public class ClaudeCliService : IAgentOrchestrator
             if (evt is not null) yield return evt;
         }
 
-        var stderr = await process.StandardError.ReadToEndAsync();
+        string stderr;
+        try { stderr = await stderrTask; } catch (OperationCanceledException) { stderr = string.Empty; }
         try { await process.WaitForExitAsync(cancellationToken); } catch (OperationCanceledException) { }
 
         if (!string.IsNullOrWhiteSpace(stderr))

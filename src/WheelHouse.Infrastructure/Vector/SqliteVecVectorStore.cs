@@ -81,6 +81,17 @@ public sealed class SqliteVecVectorStore : IVectorStore, IDisposable
         await _db.CodeIndex.Where(c => existing.Contains(c.Id)).ExecuteDeleteAsync(cancellationToken);
     }
 
+    public async Task<IReadOnlyList<string>> GetIndexedFilesAsync(
+        string repositoryPath, CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken);
+        return await _db.CodeIndex
+            .Where(c => c.RepositoryPath == repositoryPath)
+            .Select(c => c.FilePath)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+    }
+
     public async Task<IReadOnlyList<CodeSearchResult>> SearchAsync(
         float[] queryVector, int topN, string? repositoryPath, CancellationToken cancellationToken = default)
     {
