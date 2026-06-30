@@ -70,10 +70,12 @@ public class VectorSearchService : IVectorSearchService
     {
         if (!Directory.Exists(repositoryPath)) return 0;
 
+        var onDisk = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var count = 0;
         foreach (var file in EnumerateSourceFiles(repositoryPath))
         {
             cancellationToken.ThrowIfCancellationRequested();
+            onDisk.Add(file);
             try
             {
                 count += await IndexFileAsync(repositoryPath, file, cancellationToken);
@@ -83,7 +85,26 @@ public class VectorSearchService : IVectorSearchService
                 _logger.LogWarning(ex, "Failed to index {File}", file);
             }
         }
+
+        await PruneDeletedFilesAsync(repositoryPath, onDisk, cancellationToken);
         return count;
+    }
+
+    /// <summary>
+    /// Drops vectors for files that are indexed but no longer present on disk (deleted, renamed,
+    /// or now excluded), so stale embeddings can't surface in search results.
+    /// </summary>
+    private async Task PruneDeletedFilesAsync(
+        string repositoryPath, HashSet<string> onDisk, CancellationToken cancellationToken)
+    {
+        var indexed = await _store.GetIndexedFilesAsync(repositoryPath, cancellationToken);
+        foreach (var path in indexed)
+        {
+            if (onDisk.Contains(path)) continue;
+            cancellationToken.ThrowIfCancellationRequested();
+            try { await _store.DeleteByFileAsync(repositoryPath, path, cancellationToken); }
+            catch (Exception ex) { _logger.LogWarning(ex, "Failed to prune stale index entry {File}", path); }
+        }
     }
 
     public async Task<IReadOnlyList<CodeSearchResult>> SearchAsync(

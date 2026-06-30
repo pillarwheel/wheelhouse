@@ -684,6 +684,11 @@ else
                     Title = t.Title,
                     Description = t.Description,
                     VerificationCommand = t.VerificationCommand,
+                    // Carry the rich schema through: without these the risk badges,
+                    // high-risk border, skill chips and the High-risk approval gate
+                    // would never fire for normally generated tasks.
+                    Risk = t.Risk,
+                    SkillTags = t.SkillTags,
                     Status = WorkItemStatus.Pending
                 });
             }
