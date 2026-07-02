@@ -19,8 +19,14 @@ public record ScriptRunMetrics
     /// <summary>Result of the last <c>verification</c> node, when one ran (compilation/test pass rate).</summary>
     public bool? FinalVerificationPassed { get; init; }
 
-    /// <summary>Rough token estimate across LLM/agent nodes (chars ÷ 4) for token-efficiency tracking.</summary>
+    /// <summary>
+    /// Token usage across LLM/agent nodes: real CLI-reported counts where available,
+    /// chars ÷ 4 estimates otherwise.
+    /// </summary>
     public int ApproxTokens { get; init; }
+
+    /// <summary>Total USD cost reported by agent runs (0 when the CLI reports none, e.g. subscription auth).</summary>
+    public double CostUsd { get; init; }
 
     /// <summary>Wall-clock duration of the run in milliseconds.</summary>
     public long ElapsedMs { get; init; }

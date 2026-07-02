@@ -38,17 +38,22 @@ The indexer now records the on-disk file set and prunes any indexed file no long
 
 ### P2 — RAG quality & cost
 
-#### 2.1 Chunked, symbol-aware embeddings
-Today each file becomes a **single** vector, hard-truncated at 8 000 characters
-(`VectorSearchService.IndexFileAsync`). Large files lose their tail entirely and a whole-file
-embedding dilutes semantic precision. Split files into per-symbol or sliding-window chunks and
-embed each separately. `CodeIndexEntry` already carries `SymbolName` / `SymbolKind` (currently
-always `"file"`), so the storage schema is ready — this is the natural successor to proposal #2.
+#### 2.1 Chunked, symbol-aware embeddings — ✅ Fixed (sliding-window)
+Each file used to become a **single** vector, hard-truncated at 8 000 characters, so large files
+lost their tail entirely and a whole-file embedding diluted semantic precision. `CodeChunker`
+(Core) now splits compressed source into overlapping line-aligned chunks (~1 500 chars, ~200
+overlap), each embedded separately and stored via `IVectorStore.ReplaceFileAsync`; the truncation
+cap is gone. Chunk rows carry `SymbolKind = "chunk"` and `SymbolName = "name#n"`; single-chunk
+files keep `"file"`. Remaining refinement: true per-symbol boundaries (Roslyn for C#) instead of
+character windows.
 
-#### 2.2 Change-detection to skip unchanged files
-There is no content-hash or mtime check, so every re-index re-embeds the entire repository,
-burning Gemini embedding quota (or local CPU) on the background auto-index path. Store a content
-hash per entry and short-circuit when it matches, embedding only changed files.
+#### 2.2 Change-detection to skip unchanged files — ✅ Fixed
+Every re-index used to re-embed the entire repository, burning Gemini embedding quota (or local
+CPU) on the background auto-index path. `CodeIndexEntry` now stores a SHA-256 `ContentHash` of the
+embedded snippet; `VectorSearchService` fetches the stored hashes once per run
+(`IVectorStore.GetFileHashesAsync`) and skips the embedding call when the hash matches, so only
+changed files are re-embedded. Rows written before the column existed re-embed once, then carry a
+hash.
 
 ### P3 — Maintainability
 
@@ -60,6 +65,10 @@ and the decompose flow. Extract one shared parser so the Razor component no long
 
 ### P4 — Exploration
 
-#### 4.1 Visual pipeline live telemetry
-The script graph already renders an active-node highlight and a KPI strip. A future pass could
-stream per-node token/duration counters live during a run rather than only at completion.
+#### 4.1 Visual pipeline live telemetry — ✅ Shipped
+The script graph used to show only an active-node highlight plus an end-of-run KPI strip.
+`ScriptExecutor` now streams a `ScriptNodeTelemetry` record as each node finishes (duration,
+attributed tokens, cost, success), rendered live as a per-node badge in `ScriptGraphView`.
+Token/cost numbers come from Claude Code's real `result` accounting when available
+(`AgentStreamEvent.Usage`, parsed from `usage`/`total_cost_usd`/`duration_ms`), falling back to
+the chars÷4 estimate; the KPI strip gained a run-total Cost entry.

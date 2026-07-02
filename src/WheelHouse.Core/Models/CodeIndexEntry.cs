@@ -23,5 +23,11 @@ public class CodeIndexEntry
     /// <summary>Serialized float[] embedding vector.</summary>
     public string EmbeddingJson { get; set; } = "[]";
 
+    /// <summary>
+    /// SHA-256 (hex) of the embedded snippet, used to skip re-embedding unchanged files.
+    /// Null for rows written before hashing existed; those re-embed once and then carry a hash.
+    /// </summary>
+    public string? ContentHash { get; set; }
+
     public DateTime IndexedAt { get; set; } = DateTime.UtcNow;
 }

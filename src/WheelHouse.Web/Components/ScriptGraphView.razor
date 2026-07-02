@@ -28,6 +28,21 @@ else
                         <span class="flow-node-title">@(string.IsNullOrWhiteSpace(node.Name) ? def?.Label ?? node.Type : node.Name)</span>
                         <span class="flow-node-type">@node.Type</span>
                     </div>
+                    @if (NodeTelemetry is not null && NodeTelemetry.TryGetValue(node.Id, out var t))
+                    {
+                        <div class="flow-node-telemetry @(t.Succeeded ? "" : "failed")"
+                             title="@TelemetryTooltip(t)">
+                            <span>⏱ @FormatMs(t.ElapsedMs)</span>
+                            @if (t.ApproxTokens > 0)
+                            {
+                                <span>· @FormatTokens(t.ApproxTokens) tok</span>
+                            }
+                            @if (t.CostUsd > 0)
+                            {
+                                <span>· $@t.CostUsd.ToString("0.00##", Inv)</span>
+                            }
+                        </div>
+                    }
                     <div class="flow-ports">
                         <div class="flow-col flow-col-in">
                             @foreach (var port in def?.Inputs ?? Array.Empty<string>())
@@ -61,6 +76,9 @@ else
     /// <summary>Id of the node currently executing, highlighted with a glowing border.</summary>
     [Parameter] public string? ActiveNodeId { get; set; }
 
+    /// <summary>Live per-node counters (duration/tokens/cost), keyed by node id, updated as nodes finish.</summary>
+    [Parameter] public IReadOnlyDictionary<string, ScriptNodeTelemetry>? NodeTelemetry { get; set; }
+
     /// <summary>Pixel height of the scroll viewport.</summary>
     [Parameter] public int Height { get; set; } = 360;
 
@@ -83,6 +101,17 @@ else
     }
 
     private static bool IsControlPort(string port) => ScriptNodeTypes.IsControlPort(port);
+
+    private static string FormatMs(long ms) =>
+        ms < 1000 ? $"{ms}ms" : (ms / 1000.0).ToString("0.0", Inv) + "s";
+
+    private static string FormatTokens(int tokens) =>
+        tokens < 1000 ? tokens.ToString(Inv) : (tokens / 1000.0).ToString("0.0", Inv) + "k";
+
+    private static string TelemetryTooltip(ScriptNodeTelemetry t) =>
+        $"{(t.Succeeded ? "Completed" : "Failed")} in {FormatMs(t.ElapsedMs)}"
+        + (t.ApproxTokens > 0 ? $", ~{t.ApproxTokens:N0} tokens" : "")
+        + (t.CostUsd > 0 ? $", ${t.CostUsd:0.00##}" : "");
 
     private (double X, double Y)? PortPos(string nodeId, string port, bool input)
     {

@@ -99,7 +99,13 @@ public static class ScriptNodeTypes
         new ScriptNodeType("parallel", "Parallel",
             Inputs: new[] { "Execute" },
             Outputs: new[] { "BranchA", "BranchB" },
-            Settings: Array.Empty<ScriptSettingField>()),
+            Settings: new[]
+            {
+                // worktree = each branch runs in its own git worktree (no file collisions);
+                // verified work is merged back when the branches rejoin at the merge node.
+                new ScriptSettingField("Isolation", "Isolation",
+                    Options: new[] { "shared", "worktree" })
+            }),
 
         new ScriptNodeType("merge", "Merge",
             Inputs: new[] { "A", "B" },

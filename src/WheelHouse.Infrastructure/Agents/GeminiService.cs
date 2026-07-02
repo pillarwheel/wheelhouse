@@ -28,12 +28,16 @@ public class GeminiService : IGeminiService
 
     private readonly HttpClient _http;
     private readonly GeminiOptions _options;
+    private readonly GeminiContextCache _contextCache;
     private readonly ILogger<GeminiService> _logger;
 
-    public GeminiService(HttpClient http, GeminiOptions options, ILogger<GeminiService> logger)
+    public GeminiService(
+        HttpClient http, GeminiOptions options, GeminiContextCache contextCache,
+        ILogger<GeminiService> logger)
     {
         _http = http;
         _options = options;
+        _contextCache = contextCache;
         _logger = logger;
     }
 
@@ -46,7 +50,6 @@ public class GeminiService : IGeminiService
         string goal, string repositoryContext, CancellationToken cancellationToken = default)
     {
         var prompt =
-            $"## Repository context\n{repositoryContext}\n\n" +
             $"## Goal\n{goal}\n\n" +
             "Produce a concise, build-ready markdown implementation plan for a downstream coding agent. " +
             "Close the loop: every step must be executable and verifiable. Use exactly these sections:\n" +
@@ -59,7 +62,7 @@ public class GeminiService : IGeminiService
             "6. **Open Questions** — anything ambiguous that should be confirmed before risky changes.\n" +
             "7. **Next / Blocked** — the immediate next action after this plan, and anything blocking progress.\n\n" +
             "Prefer transparent, file-first changes and reversible steps. Be concrete over comprehensive.";
-        return await GenerateAsync(prompt, cancellationToken);
+        return await GenerateWithContextAsync(repositoryContext, prompt, cancellationToken);
     }
 
     public async Task<IReadOnlyList<TaskItem>> GenerateTasksAsync(
@@ -92,10 +95,9 @@ public class GeminiService : IGeminiService
         string command, string output, string repositoryContext, CancellationToken cancellationToken = default)
     {
         var prompt =
-            $"## Repository context\n{repositoryContext}\n\n" +
             $"## Failing command\n`{command}`\n\n## Output\n```\n{output}\n```\n\n" +
             "Diagnose the root cause and give the exact fix (commands and/or code edits).";
-        return GenerateAsync(prompt, cancellationToken);
+        return GenerateWithContextAsync(repositoryContext, prompt, cancellationToken);
     }
 
     public async Task<float[]> EmbedAsync(string text, CancellationToken cancellationToken = default)
@@ -134,21 +136,105 @@ public class GeminiService : IGeminiService
         if (!IsConfigured)
             return "_Gemini is not configured (set GEMINI_API_KEY). Returning placeholder plan._";
 
-        var url = $"{_options.BaseUrl}/models/{_options.GenerationModel}:generateContent?key={_options.ApiKey}";
-        object body = jsonMode
-            ? new
+        var (_, text) = await GenerateCoreAsync(userPrompt, jsonMode, cachedContent: null, cancellationToken);
+        return text;
+    }
+
+    /// <summary>
+    /// Generates against a (potentially large) repository context, using Gemini explicit
+    /// context caching when worthwhile: the context is uploaded once as a <c>cachedContents</c>
+    /// resource and later calls only pay for the volatile prompt. Falls back to sending the
+    /// context inline whenever the cache can't be created or is rejected.
+    /// </summary>
+    private async Task<string> GenerateWithContextAsync(
+        string repositoryContext, string volatilePrompt, CancellationToken cancellationToken)
+    {
+        var inlinePrompt = $"## Repository context\n{repositoryContext}\n\n{volatilePrompt}";
+        if (!IsConfigured) return await GenerateAsync(inlinePrompt, cancellationToken);
+
+        var cacheName = await GetOrCreateContextCacheAsync(repositoryContext, cancellationToken);
+        if (cacheName is not null)
+        {
+            var (ok, text) = await GenerateCoreAsync(volatilePrompt, jsonMode: false, cacheName, cancellationToken);
+            if (ok) return text;
+
+            // The server no longer honours the cache (expired/evicted): forget it, go inline.
+            _contextCache.Invalidate(GeminiContextCache.KeyFor(repositoryContext));
+            _logger.LogInformation("Gemini context cache rejected; retrying with inline context.");
+        }
+        return await GenerateAsync(inlinePrompt, cancellationToken);
+    }
+
+    private async Task<string?> GetOrCreateContextCacheAsync(
+        string repositoryContext, CancellationToken cancellationToken)
+    {
+        if (!_options.ContextCacheEnabled ||
+            repositoryContext.Length < _options.ContextCacheMinChars)
+            return null;
+
+        var key = GeminiContextCache.KeyFor(repositoryContext);
+        var now = DateTimeOffset.UtcNow;
+        if (_contextCache.TryGet(key, now, out var existing)) return existing;
+
+        var url = $"{_options.BaseUrl}/cachedContents?key={_options.ApiKey}";
+        var body = new
+        {
+            model = $"models/{_options.GenerationModel}",
+            // The cache must carry the system instruction: generateContent may not set one
+            // alongside cachedContent.
+            systemInstruction = new { parts = new[] { new { text = StablePreamble } } },
+            contents = new[]
             {
-                system_instruction = new { parts = new[] { new { text = StablePreamble } } },
-                contents = new[] { new { role = "user", parts = new[] { new { text = userPrompt } } } },
-                // Force structured JSON output so task parsing is reliable.
-                generationConfig = new { responseMimeType = "application/json" }
+                new { role = "user", parts = new[] { new { text = $"## Repository context\n{repositoryContext}" } } }
+            },
+            ttl = $"{_options.ContextCacheTtlSeconds}s"
+        };
+
+        try
+        {
+            using var resp = await _http.PostAsJsonAsync(url, body, cancellationToken);
+            if (!resp.IsSuccessStatusCode)
+            {
+                // Typical cause: context below the model's minimum cacheable token count.
+                _logger.LogDebug("Gemini cachedContents unavailable ({Status}); sending context inline.",
+                    (int)resp.StatusCode);
+                return null;
             }
-            : new
-            {
-                // Stable system instruction first → KV-cache friendly prefix.
-                system_instruction = new { parts = new[] { new { text = StablePreamble } } },
-                contents = new[] { new { role = "user", parts = new[] { new { text = userPrompt } } } }
-            };
+
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(cancellationToken));
+            var name = doc.RootElement.TryGetProperty("name", out var n) ? n.GetString() : null;
+            if (string.IsNullOrEmpty(name)) return null;
+
+            // Expire our record slightly early so we never reference a just-dead cache.
+            _contextCache.Store(key, name!, now.AddSeconds(Math.Max(60, _options.ContextCacheTtlSeconds) - 30));
+            _logger.LogInformation("Created Gemini context cache {Name} ({Chars} chars, ttl {Ttl}s).",
+                name, repositoryContext.Length, _options.ContextCacheTtlSeconds);
+            return name;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Gemini cachedContents call failed; sending context inline.");
+            return null;
+        }
+    }
+
+    private async Task<(bool Ok, string Text)> GenerateCoreAsync(
+        string userPrompt, bool jsonMode, string? cachedContent, CancellationToken cancellationToken)
+    {
+        var url = $"{_options.BaseUrl}/models/{_options.GenerationModel}:generateContent?key={_options.ApiKey}";
+
+        var body = new Dictionary<string, object?>
+        {
+            ["contents"] = new[] { new { role = "user", parts = new[] { new { text = userPrompt } } } }
+        };
+        if (cachedContent is not null)
+            body["cachedContent"] = cachedContent; // carries context + system instruction
+        else
+            // Stable system instruction first → KV-cache friendly prefix.
+            body["system_instruction"] = new { parts = new[] { new { text = StablePreamble } } };
+        if (jsonMode)
+            // Force structured JSON output so task parsing is reliable.
+            body["generationConfig"] = new { responseMimeType = "application/json" };
 
         try
         {
@@ -157,22 +243,27 @@ public class GeminiService : IGeminiService
             if (!resp.IsSuccessStatusCode)
             {
                 _logger.LogWarning("Gemini error {Status}: {Body}", resp.StatusCode, payload);
-                return $"_Gemini request failed ({(int)resp.StatusCode})._";
+                return (false, $"_Gemini request failed ({(int)resp.StatusCode})._");
             }
 
             using var doc = JsonDocument.Parse(payload);
+            if (doc.RootElement.TryGetProperty("usageMetadata", out var usage) &&
+                usage.TryGetProperty("cachedContentTokenCount", out var cachedTokens))
+                _logger.LogInformation("Gemini served {Tokens} tokens from the context cache.",
+                    cachedTokens.GetInt32());
+
             var text = doc.RootElement
                 .GetProperty("candidates")[0]
                 .GetProperty("content")
                 .GetProperty("parts")[0]
                 .GetProperty("text")
                 .GetString();
-            return text ?? "(empty response)";
+            return (true, text ?? "(empty response)");
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Gemini generation failed.");
-            return $"_Gemini request errored: {ex.Message}._";
+            return (false, $"_Gemini request errored: {ex.Message}._");
         }
     }
 

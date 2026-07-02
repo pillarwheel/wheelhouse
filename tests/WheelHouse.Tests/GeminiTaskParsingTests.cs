@@ -80,7 +80,7 @@ public class GeminiTaskParsingTests
         var httpClient = new HttpClient(handler);
 
         var options = new GeminiOptions { ApiKey = "fake-key" };
-        var service = new GeminiService(httpClient, options, NullLogger<GeminiService>.Instance);
+        var service = new GeminiService(httpClient, options, new GeminiContextCache(), NullLogger<GeminiService>.Instance);
 
         // Act
         var tasks = await service.GenerateTasksAsync("Some dummy plan");

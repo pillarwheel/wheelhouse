@@ -22,7 +22,7 @@ public class GeminiLiveTests
         var options = new GeminiOptions();
         if (string.IsNullOrWhiteSpace(options.ApiKey)) return null;
         return new GeminiService(new HttpClient { Timeout = TimeSpan.FromSeconds(60) },
-            options, NullLogger<GeminiService>.Instance);
+            options, new GeminiContextCache(), NullLogger<GeminiService>.Instance);
     }
 
     /// <summary>True when text reflects a transient API outage rather than a code/config problem.</summary>

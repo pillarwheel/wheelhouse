@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using WheelHouse.Core.Interfaces;
 using WheelHouse.Infrastructure.Agents;
 using WheelHouse.Infrastructure.Embeddings;
+using WheelHouse.Infrastructure.Mcp;
 using WheelHouse.Infrastructure.Persistence;
 using WheelHouse.Infrastructure.Prompts;
 using WheelHouse.Infrastructure.Services;
@@ -42,11 +43,14 @@ public static class DependencyInjection
 
         // Gemini (planning + cloud embeddings).
         services.AddSingleton(new GeminiOptions());
+        services.AddSingleton<GeminiContextCache>();
         services.AddHttpClient<IGeminiService, GeminiService>(c =>
             c.Timeout = TimeSpan.FromSeconds(120));
 
         services.AddSingleton<ICodeCompressionService, CodeCompressionService>();
         services.AddSingleton(new HeadroomOptions());
+        services.AddSingleton(new McpEndpointState());
+        services.AddSingleton<WheelHouseMcpServer>();
         services.AddSingleton<IAgentOrchestrator, ClaudeCliService>();
         services.AddScoped<WorkspaceConfigService>();
         services.AddScoped<IPromptTemplateService, PromptTemplateService>();
@@ -56,6 +60,8 @@ public static class DependencyInjection
         services.AddSingleton<IGitService, GitService>();
         services.AddSingleton<IWorkspaceIndexQueue, WorkspaceIndexQueue>();
         services.AddHostedService<WorkspaceIndexingService>();
+        services.AddSingleton(new WorkspaceWatchOptions());
+        services.AddHostedService<WorkspaceWatchService>();
         services.AddScoped<IWorkspaceStateSyncService, WorkspaceStateSyncService>();
 
         // Template-driven flow: keyed implementations + resolver

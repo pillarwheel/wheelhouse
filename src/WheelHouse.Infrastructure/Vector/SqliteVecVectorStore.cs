@@ -42,22 +42,34 @@ public sealed class SqliteVecVectorStore : IVectorStore, IDisposable
 
     private int Dim => _embeddings.Dimensions;
 
-    public async Task UpsertAsync(CodeIndexEntry entry, float[] vector, CancellationToken cancellationToken = default)
+    public Task UpsertAsync(CodeIndexEntry entry, float[] vector, CancellationToken cancellationToken = default)
+        => ReplaceFileAsync(entry.RepositoryPath, entry.FilePath, new[] { entry }, new[] { vector }, cancellationToken);
+
+    public async Task ReplaceFileAsync(
+        string repositoryPath, string filePath,
+        IReadOnlyList<CodeIndexEntry> entries, IReadOnlyList<float[]> vectors,
+        CancellationToken cancellationToken = default)
     {
         await EnsureInitializedAsync(cancellationToken);
 
         // Replace any prior rows for this file (metadata + vectors).
-        await DeleteByFileAsync(entry.RepositoryPath, entry.FilePath, cancellationToken);
+        await DeleteByFileAsync(repositoryPath, filePath, cancellationToken);
 
-        entry.EmbeddingJson = "[]"; // vector lives in the vec0 table, not here
-        _db.CodeIndex.Add(entry);
+        foreach (var entry in entries)
+        {
+            entry.EmbeddingJson = "[]"; // vectors live in the vec0 table, not here
+            _db.CodeIndex.Add(entry);
+        }
         await _db.SaveChangesAsync(cancellationToken);
 
-        await using var cmd = _conn!.CreateCommand();
-        cmd.CommandText = $"INSERT INTO {VecTable}(rowid, embedding) VALUES (@id, @vec)";
-        cmd.Parameters.AddWithValue("@id", entry.Id);
-        cmd.Parameters.AddWithValue("@vec", JsonSerializer.Serialize(vector));
-        await cmd.ExecuteNonQueryAsync(cancellationToken);
+        for (var i = 0; i < entries.Count; i++)
+        {
+            await using var cmd = _conn!.CreateCommand();
+            cmd.CommandText = $"INSERT INTO {VecTable}(rowid, embedding) VALUES (@id, @vec)";
+            cmd.Parameters.AddWithValue("@id", entries[i].Id);
+            cmd.Parameters.AddWithValue("@vec", JsonSerializer.Serialize(vectors[i]));
+            await cmd.ExecuteNonQueryAsync(cancellationToken);
+        }
     }
 
     public async Task DeleteByFileAsync(string repositoryPath, string filePath, CancellationToken cancellationToken = default)
@@ -91,6 +103,24 @@ public sealed class SqliteVecVectorStore : IVectorStore, IDisposable
             .Distinct()
             .ToListAsync(cancellationToken);
     }
+
+    public async Task<IReadOnlyDictionary<string, string?>> GetFileHashesAsync(
+        string repositoryPath, CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken);
+        var rows = await _db.CodeIndex
+            .Where(c => c.RepositoryPath == repositoryPath)
+            .Select(c => new { c.FilePath, c.ContentHash })
+            .ToListAsync(cancellationToken);
+
+        var map = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var r in rows) map[r.FilePath] = r.ContentHash;
+        return map;
+    }
+
+    public Task<IReadOnlyList<CodeSearchResult>> KeywordSearchAsync(
+        string query, int topN, string? repositoryPath, CancellationToken cancellationToken = default)
+        => CodeIndexKeywordSearch.SearchAsync(_db, query, topN, repositoryPath, cancellationToken);
 
     public async Task<IReadOnlyList<CodeSearchResult>> SearchAsync(
         float[] queryVector, int topN, string? repositoryPath, CancellationToken cancellationToken = default)

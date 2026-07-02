@@ -37,17 +37,20 @@ public class ScriptExecutor : IScriptExecutor
     private readonly IAgentOrchestrator _orchestrator;
     private readonly IVerificationRunner _verifier;
     private readonly IDbContextFactory<WheelHouseDbContext> _dbFactory;
+    private readonly IGitService _git;
 
     public ScriptExecutor(
         IGeminiService gemini,
         IAgentOrchestrator orchestrator,
         IVerificationRunner verifier,
-        IDbContextFactory<WheelHouseDbContext> dbFactory)
+        IDbContextFactory<WheelHouseDbContext> dbFactory,
+        IGitService git)
     {
         _gemini = gemini;
         _orchestrator = orchestrator;
         _verifier = verifier;
         _dbFactory = dbFactory;
+        _git = git;
     }
 
     public Func<string, Task<bool>>? ApprovalHandler { get; set; }
@@ -56,6 +59,7 @@ public class ScriptExecutor : IScriptExecutor
     private sealed class Acc
     {
         public int Executed, Succeeded, Handoff, Tokens;
+        public double Cost;
         public bool? FinalVerify;
         public readonly object Lock = new();
     }
@@ -64,20 +68,26 @@ public class ScriptExecutor : IScriptExecutor
         AgentSession session,
         Action<string, AgentEventKind> onLog,
         Action<string> onNodeActive,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action<ScriptNodeTelemetry>? onNodeTelemetry = null)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
         var acc = new Acc();
 
-        ScriptRunMetrics Result() => new()
+        ScriptRunMetrics Result()
         {
-            NodesExecuted = acc.Executed,
-            NodesSucceeded = acc.Succeeded,
-            HandoffErrors = acc.Handoff,
-            FinalVerificationPassed = acc.FinalVerify,
-            ApproxTokens = acc.Tokens,
-            ElapsedMs = sw.ElapsedMilliseconds
-        };
+            lock (acc.Lock)
+                return new()
+                {
+                    NodesExecuted = acc.Executed,
+                    NodesSucceeded = acc.Succeeded,
+                    HandoffErrors = acc.Handoff,
+                    FinalVerificationPassed = acc.FinalVerify,
+                    ApproxTokens = acc.Tokens,
+                    CostUsd = acc.Cost,
+                    ElapsedMs = sw.ElapsedMilliseconds
+                };
+        }
 
         var graph = ScriptGraph.FromJson(session.Template?.GraphJson);
         var start = graph.StartNode;
@@ -138,10 +148,10 @@ public class ScriptExecutor : IScriptExecutor
             return PromptRendering.Render(template, values);
         }
 
-        string ComposePrompt(ScriptNode node, string? template)
+        string ComposePrompt(ScriptNode node, string? template, string repoPath)
         {
             var prompt = Render(node, template);
-            var scoped = BuildScopedContext(session.RepositoryPath, node.Settings.GetValueOrDefault("ContextGlobs"), onLog);
+            var scoped = BuildScopedContext(repoPath, node.Settings.GetValueOrDefault("ContextGlobs"), onLog);
             return string.IsNullOrEmpty(scoped) ? prompt : prompt + scoped;
         }
 
@@ -149,18 +159,27 @@ public class ScriptExecutor : IScriptExecutor
             graph.Edges.FirstOrDefault(e =>
                 e.SourceNodeId == node.Id && string.Equals(e.SourcePort, port, StringComparison.OrdinalIgnoreCase));
 
-        async Task<(string Text, bool Error)> RunClaude(string prompt, string permissionMode)
+        async Task<(string Text, bool Error, bool GotUsage)> RunClaude(string prompt, string permissionMode, string repoPath)
         {
             var sb = new StringBuilder();
             var hadError = false;
-            var request = new AgentRunRequest(prompt, session.RepositoryPath, PermissionMode: permissionMode);
+            var gotUsage = false;
+            var request = new AgentRunRequest(prompt, repoPath, PermissionMode: permissionMode);
             await foreach (var evt in _orchestrator.RunAsync(request, cancellationToken))
             {
                 onLog(evt.Text, evt.Kind);
                 if (evt.Kind == AgentEventKind.AssistantText) sb.AppendLine(evt.Text);
                 if (evt.IsError || evt.Kind == AgentEventKind.Error) hadError = true;
+                if (evt.Usage is { } usage)
+                {
+                    // Real CLI-reported accounting beats the chars÷4 estimate.
+                    gotUsage = usage.TotalTokens > 0;
+                    Interlocked.Add(ref acc.Tokens, usage.TotalTokens);
+                    if (usage.CostUsd is { } cost)
+                        lock (acc.Lock) acc.Cost += cost;
+                }
             }
-            return (sb.ToString().Trim(), hadError);
+            return (sb.ToString().Trim(), hadError, gotUsage);
         }
 
         // Rough token estimate (chars ÷ 4) accumulated across LLM/agent nodes for the efficiency KPI.
@@ -171,19 +190,20 @@ public class ScriptExecutor : IScriptExecutor
         }
 
         // Atomic git commit (research_notes §2): snapshot a code-changing stage so it can be rolled back.
-        async Task AutoCommit(ScriptNode node)
+        async Task AutoCommit(ScriptNode node, string repoPath)
         {
             var label = string.IsNullOrWhiteSpace(node.Name) ? "Claude Execute" : node.Name;
             var message = $"{label}: auto-commit";
             onLog($"Auto-committing stage: {message}", AgentEventKind.System);
-            await _verifier.RunAsync("git add -A", session.RepositoryPath, cancellationToken: cancellationToken);
+            await _verifier.RunAsync("git add -A", repoPath, cancellationToken: cancellationToken);
             var commit = await _verifier.RunAsync(
-                $"git commit -m \"{message.Replace('"', '\'')}\"", session.RepositoryPath, cancellationToken: cancellationToken);
+                $"git commit -m \"{message.Replace('"', '\'')}\"", repoPath, cancellationToken: cancellationToken);
             onLog(commit.Succeeded ? "Stage committed." : $"Nothing to commit.\n{Truncate(commit.Output)}", AgentEventKind.System);
         }
 
-        // Runs one leaf node and returns the control-output port to follow.
-        async Task<string> ExecuteNodeAsync(ScriptNode node, string entryPort)
+        // Runs one leaf node (inside `repoPath`, which is a worktree for isolated parallel
+        // branches) and returns the control-output port to follow.
+        async Task<string> ExecuteNodeAsync(ScriptNode node, string entryPort, string repoPath)
         {
             onNodeActive(node.Id);
             var label = string.IsNullOrWhiteSpace(node.Name) ? node.Type : node.Name;
@@ -194,12 +214,12 @@ public class ScriptExecutor : IScriptExecutor
                 case "start":
                     SetOutput(node, "Goal",
                         !string.IsNullOrWhiteSpace(session.PlanningContext) ? session.PlanningContext! : session.Name);
-                    SetOutput(node, "RepositoryPath", session.RepositoryPath);
+                    SetOutput(node, "RepositoryPath", repoPath);
                     return "Next";
 
                 case "gemini-prompt":
                 {
-                    var prompt = ComposePrompt(node, node.Settings.GetValueOrDefault("Prompt"));
+                    var prompt = ComposePrompt(node, node.Settings.GetValueOrDefault("Prompt"), repoPath);
                     onLog($"Gemini ← {Truncate(prompt)}", AgentEventKind.System);
                     var response = await _gemini.CompleteAsync(prompt, cancellationToken);
                     AddTokens(prompt, response);
@@ -210,28 +230,28 @@ public class ScriptExecutor : IScriptExecutor
 
                 case "claude-prompt":
                 {
-                    var prompt = ComposePrompt(node, node.Settings.GetValueOrDefault("Prompt"));
-                    var (response, error) = await RunClaude(prompt, "plan");
-                    AddTokens(prompt, response);
+                    var prompt = ComposePrompt(node, node.Settings.GetValueOrDefault("Prompt"), repoPath);
+                    var (response, error, gotUsage) = await RunClaude(prompt, "plan", repoPath);
+                    if (!gotUsage) AddTokens(prompt, response);
                     Publish(node, response);
                     return error ? "Failure" : "Success";
                 }
 
                 case "claude-execute":
                 {
-                    var prompt = ComposePrompt(node, node.Settings.GetValueOrDefault("Prompt"));
-                    var (response, error) = await RunClaude(prompt, "acceptEdits");
-                    AddTokens(prompt, response);
+                    var prompt = ComposePrompt(node, node.Settings.GetValueOrDefault("Prompt"), repoPath);
+                    var (response, error, gotUsage) = await RunClaude(prompt, "acceptEdits", repoPath);
+                    if (!gotUsage) AddTokens(prompt, response);
                     Publish(node, response);
                     if (!error && string.Equals(node.Settings.GetValueOrDefault("AutoCommit"), "on", StringComparison.OrdinalIgnoreCase))
-                        await AutoCommit(node);
+                        await AutoCommit(node, repoPath);
                     return error ? "Failure" : "Success";
                 }
 
                 case "dialogue":
                 {
                     var rounds = int.TryParse(node.Settings.GetValueOrDefault("Rounds"), out var r) && r > 0 ? Math.Min(r, 6) : 2;
-                    var seed = ComposePrompt(node, node.Settings.GetValueOrDefault("Prompt"));
+                    var seed = ComposePrompt(node, node.Settings.GetValueOrDefault("Prompt"), repoPath);
                     if (string.IsNullOrWhiteSpace(seed)) seed = shared.GetValueOrDefault("LastResponse") ?? session.Name;
 
                     var transcript = new StringBuilder();
@@ -244,11 +264,11 @@ public class ScriptExecutor : IScriptExecutor
                         transcript.AppendLine($"## Gemini · round {i}").AppendLine(critique).AppendLine();
                         onLog($"Gemini (round {i}): {Truncate(critique)}", AgentEventKind.AssistantText);
 
-                        var (refined, _) = await RunClaude(
+                        var (refined, _, refinedUsage) = await RunClaude(
                             $"A reviewer gave this feedback:\n{critique}\n\nRevise and improve the proposal below accordingly. " +
-                            $"Return only the revised proposal:\n\n{currentText}", "plan");
+                            $"Return only the revised proposal:\n\n{currentText}", "plan", repoPath);
                         transcript.AppendLine($"## Claude · round {i}").AppendLine(refined).AppendLine();
-                        AddTokens(critique, refined);
+                        AddTokens(critique, refinedUsage ? null : refined);
                         if (!string.IsNullOrWhiteSpace(refined)) currentText = refined;
                     }
                     Publish(node, transcript.ToString().Trim());
@@ -265,7 +285,7 @@ public class ScriptExecutor : IScriptExecutor
                         return "Passed";
                     }
                     onLog($"$ {command}", AgentEventKind.System);
-                    var result = await _verifier.RunAsync(command, session.RepositoryPath, cancellationToken: cancellationToken);
+                    var result = await _verifier.RunAsync(command, repoPath, cancellationToken: cancellationToken);
                     onLog($"(exit {result.ExitCode})\n{result.Output}", result.Succeeded ? AgentEventKind.Result : AgentEventKind.Error);
                     Publish(node, result.Output);
                     lock (acc.Lock) acc.FinalVerify = result.Succeeded;
@@ -282,7 +302,7 @@ public class ScriptExecutor : IScriptExecutor
                     }
                     var cmd = $"git {args}";
                     onLog($"$ {cmd}", AgentEventKind.System);
-                    var result = await _verifier.RunAsync(cmd, session.RepositoryPath, cancellationToken: cancellationToken);
+                    var result = await _verifier.RunAsync(cmd, repoPath, cancellationToken: cancellationToken);
                     onLog($"(exit {result.ExitCode})\n{result.Output}", result.Succeeded ? AgentEventKind.Result : AgentEventKind.Error);
                     Publish(node, result.Output);
                     return result.Succeeded ? "Success" : "Failure";
@@ -366,15 +386,33 @@ public class ScriptExecutor : IScriptExecutor
 
         // Runs one node with telemetry + per-node error isolation. Returns its control port, or null
         // when the node threw (the branch then ends rather than crashing the whole run).
-        async Task<string?> RunNode(ScriptNode node, string entry)
+        async Task<string?> RunNode(ScriptNode node, string entry, string repoPath)
         {
+            // Token/cost deltas are read off the shared accumulator, so concurrent parallel
+            // branches can bleed into each other's numbers — acceptable for a live gauge.
+            var nodeSw = System.Diagnostics.Stopwatch.StartNew();
+            var tokensBefore = Volatile.Read(ref acc.Tokens);
+            double costBefore;
+            lock (acc.Lock) costBefore = acc.Cost;
+
+            void ReportTelemetry(bool succeeded)
+            {
+                if (onNodeTelemetry is null) return;
+                double costDelta;
+                lock (acc.Lock) costDelta = acc.Cost - costBefore;
+                onNodeTelemetry(new ScriptNodeTelemetry(
+                    node.Id, nodeSw.ElapsedMilliseconds,
+                    Volatile.Read(ref acc.Tokens) - tokensBefore, costDelta, succeeded));
+            }
+
             try
             {
-                var outPort = await ExecuteNodeAsync(node, entry);
+                var outPort = await ExecuteNodeAsync(node, entry, repoPath);
                 // A node "succeeds" when it completes without throwing — routing to a Failed/Failure
                 // port is a valid result the engine handled, not an engine error.
                 Interlocked.Increment(ref acc.Executed);
                 Interlocked.Increment(ref acc.Succeeded);
+                ReportTelemetry(succeeded: true);
                 return outPort;
             }
             catch (OperationCanceledException) { throw; }
@@ -383,13 +421,46 @@ public class ScriptExecutor : IScriptExecutor
                 Interlocked.Increment(ref acc.Executed);
                 var label = string.IsNullOrWhiteSpace(node.Name) ? node.Type : node.Name;
                 onLog($"Node '{label}' failed: {ex.Message}", AgentEventKind.Error);
+                ReportTelemetry(succeeded: false);
                 return null;
             }
         }
 
+        // Merges isolated branch worktrees back into `repoPath` (sequentially — concurrent merges
+        // would race), snapshotting uncommitted agent edits first so they survive worktree removal.
+        // A conflicted branch is left unmerged with its name in the log for manual resolution.
+        async Task MergeWorktreesAsync(string repoPath, List<(string Path, string Branch)> worktrees)
+        {
+            foreach (var (wtPath, branchName) in worktrees)
+            {
+                try
+                {
+                    var status = await _git.GetStatusAsync(wtPath, cancellationToken);
+                    if (status.IsRepo && !status.Clean)
+                        await _git.CommitAllAsync(wtPath, $"WheelHouse parallel snapshot ({branchName})", cancellationToken);
+
+                    var merge = await _git.MergeBranchAsync(repoPath, branchName, cancellationToken);
+                    onLog(merge.Success
+                        ? $"Merged {branchName}."
+                        : $"Merge of {branchName} failed — branch kept for manual resolution.\n{Truncate(merge.Output)}",
+                        merge.Success ? AgentEventKind.Result : AgentEventKind.Error);
+
+                    await _git.RemoveWorktreeAsync(repoPath, wtPath, cancellationToken);
+                    if (merge.Success)
+                        await _git.DeleteBranchAsync(repoPath, branchName, force: false, cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    onLog($"Worktree cleanup for {branchName} failed: {ex.Message}", AgentEventKind.Error);
+                }
+            }
+        }
+
         // Walks control flow from `node`. Returns the merge node it halted at (so the caller resumes
-        // past it), or null when the path ends. `parallel` nodes fork concurrent sub-walks that rejoin.
-        async Task<ScriptNode?> WalkAsync(ScriptNode? node, string entryPort)
+        // past it), or null when the path ends. `parallel` nodes fork concurrent sub-walks that
+        // rejoin; with Isolation=worktree each branch runs in its own git worktree and verified
+        // results are merged back when the branches join.
+        async Task<ScriptNode?> WalkAsync(ScriptNode? node, string entryPort, string repoPath)
         {
             while (node is not null && !cancellationToken.IsCancellationRequested)
             {
@@ -409,21 +480,49 @@ public class ScriptExecutor : IScriptExecutor
                     Interlocked.Increment(ref acc.Executed);
                     Interlocked.Increment(ref acc.Succeeded);
 
+                    var useWorktrees =
+                        string.Equals(node.Settings.GetValueOrDefault("Isolation"), "worktree", StringComparison.OrdinalIgnoreCase) &&
+                        await _git.IsRepositoryAsync(repoPath, cancellationToken);
+                    var runTag = $"{DateTime.UtcNow:HHmmss}-{Guid.NewGuid().ToString("N")[..6]}";
+
                     var def = ScriptNodeTypes.Find("parallel");
                     var branches = new List<Task<ScriptNode?>>();
+                    var worktrees = new List<(string Path, string Branch)>();
                     foreach (var port in def?.Outputs ?? Array.Empty<string>())
                     {
                         var be = ControlEdge(node, port);
-                        if (be is not null && nodesById.TryGetValue(be.TargetNodeId, out var target))
-                            branches.Add(WalkAsync(target, be.TargetPort));
+                        if (be is null || !nodesById.TryGetValue(be.TargetNodeId, out var target)) continue;
+
+                        var branchRepo = repoPath;
+                        if (useWorktrees)
+                        {
+                            var branchName = $"wheelhouse/parallel-{runTag}-{port.ToLowerInvariant()}";
+                            var wtPath = Path.Combine(Path.GetTempPath(), "wheelhouse-worktrees", $"{runTag}-{port.ToLowerInvariant()}");
+                            var add = await _git.AddWorktreeAsync(repoPath, wtPath, branchName, cancellationToken);
+                            if (add.Success)
+                            {
+                                worktrees.Add((wtPath, branchName));
+                                branchRepo = wtPath;
+                                onLog($"Branch '{port}' isolated in worktree {wtPath} ({branchName}).", AgentEventKind.System);
+                            }
+                            else
+                            {
+                                onLog($"Could not create worktree for '{port}' ({Truncate(add.Output)}); running in the shared repository.", AgentEventKind.Error);
+                            }
+                        }
+                        branches.Add(WalkAsync(target, be.TargetPort, branchRepo));
                     }
 
                     var halts = await Task.WhenAll(branches);
+
+                    if (worktrees.Count > 0)
+                        await MergeWorktreesAsync(repoPath, worktrees);
+
                     var merge = halts.FirstOrDefault(h => h is not null);
                     if (merge is null) return null; // branches ended without a merge
 
-                    // Run the merge node once, then continue past it.
-                    var mergeOut = await RunNode(merge, ScriptNodeTypes.ControlPort);
+                    // Run the merge node once, then continue past it (back in the main repository).
+                    var mergeOut = await RunNode(merge, ScriptNodeTypes.ControlPort, repoPath);
                     if (mergeOut is null) return null;
                     var me = ControlEdge(merge, mergeOut);
                     node = me is null ? null : nodesById.GetValueOrDefault(me.TargetNodeId);
@@ -431,7 +530,7 @@ public class ScriptExecutor : IScriptExecutor
                     continue;
                 }
 
-                var outPort = await RunNode(node, entryPort);
+                var outPort = await RunNode(node, entryPort, repoPath);
                 if (outPort is null) return null;
                 var edge = ControlEdge(node, outPort);
                 node = edge is null ? null : nodesById.GetValueOrDefault(edge.TargetNodeId);
@@ -440,7 +539,7 @@ public class ScriptExecutor : IScriptExecutor
             return null;
         }
 
-        await WalkAsync(start, ScriptNodeTypes.ControlPort);
+        await WalkAsync(start, ScriptNodeTypes.ControlPort, session.RepositoryPath);
         return Result();
     }
 

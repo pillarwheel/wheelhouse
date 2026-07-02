@@ -21,6 +21,7 @@ For step-by-step walkthroughs, navigation breadcrumbs, and deep-dive technical c
 * **[Comprehensive User & Developer Guide](docs/comprehensive_guide.md)** — Core walkthroughs for the Visual Scripting graph editor, Headroom troubleshooting, and GitOps syncer configuration.
 * **[Usage Guide & Walkthrough](docs/usage.md)** — Step-by-step guide to repository indexing, Gemini planning, task decomposition, and local execution.
 * **[Architectural Suggestions](docs/architectural_suggestions.md)** — Shipped milestones plus the active backlog for local RAG optimization, multi-language code compression, and branch checkpoints.
+* **[Next Integrations & Development Plan](docs/next_integrations_plan.md)** — Forward-looking roadmap: RAG performance work, deeper Claude/Gemini integration, and the remaining backlog sequenced into sprints.
 
 ---
 
@@ -42,7 +43,8 @@ It runs as a native desktop app (Photino) or in your browser (Blazor Server), ba
 - **Test-Driven Handoff** — plan → task checklist → Claude executes → verification command gates completion → one-click "Ask Gemini for a fix" on failure.
 - **Autonomous execution & permissions** — per-workspace Claude permission mode (`acceptEdits` by default) and auto-approve rules that map to Claude `--allowedTools` / `--disallowedTools`.
 - **Token compression (optional)** — routes Claude through [Headroom](https://github.com/headroomlabs-ai/headroom) (`headroom wrap claude`) to cut context tokens; auto-detected with graceful fallback.
-- **Offline-capable RAG** — code search via on-device ONNX embeddings (all-MiniLM-L6-v2) + [sqlite-vec](https://github.com/asg017/sqlite-vec) ANN, falling back to Gemini embeddings + cosine.
+- **Offline-capable RAG** — hybrid (semantic + keyword) code search via on-device ONNX embeddings (all-MiniLM-L6-v2) + [sqlite-vec](https://github.com/asg017/sqlite-vec) ANN, falling back to Gemini embeddings + cosine. Chunked incremental indexing keeps itself fresh via a file watcher.
+- **MCP tools for Claude** — every Claude run gets `search_code` / `get_knowledge` MCP tools served by the app itself, so the agent can query your indexed code mid-task.
 - **Persistent, searchable transcripts** — full session history with filters, rename, reopen, delete, Markdown export, and full-text search across all transcripts.
 - **Prompt template library** — 6 built-in parameterized R&D templates, plus your own.
 - **System Status & in-app settings** — live health of every integration; configurable company/branding.
@@ -62,7 +64,7 @@ cd wheelhouse
 cp .env.example .env          # then fill in keys (see Configuration)
 
 dotnet build
-dotnet test                   # 89 offline tests
+dotnet test                   # 156 offline tests
 
 # Desktop app (native window):
 dotnet run --project src/WheelHouse.Desktop
@@ -85,6 +87,9 @@ Copy [`.env.example`](.env.example) to `.env`. Real OS environment variables ove
 | `ANTHROPIC_API_KEY` | Direct (non-Headroom) Claude use (optional) |
 | `WHEELHOUSE_HEADROOM` | `auto` (default) / `on` / `off` |
 | `WHEELHOUSE_HEADROOM_PATH` | Explicit path to the `headroom` executable |
+| `WHEELHOUSE_WATCH` | `auto` (default) — re-index workspaces automatically when source files change; `off` disables |
+| `WHEELHOUSE_MCP` | `auto` (default) — expose the code index to Claude as MCP tools (`search_code`, `get_knowledge`); `off` disables |
+| `WHEELHOUSE_GEMINI_CACHE` | `auto` (default) — cache large repository contexts server-side (Gemini explicit caching) across plan/fix calls; `off` disables |
 
 ### In-app Settings
 Branding (company name, product name, tagline) and the default workspace permission mode are
@@ -128,7 +133,7 @@ Schema changes go through EF migrations (applied on startup), so updates never d
 
 ## Testing
 ```bash
-dotnet test                                   # 89 fast, offline tests
+dotnet test                                   # 156 fast, offline tests
 WHEELHOUSE_LIVE_TESTS=1 dotnet test           # also runs gated live API tests (needs keys/login)
 ```
 

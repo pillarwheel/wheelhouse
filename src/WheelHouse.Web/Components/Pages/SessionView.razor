@@ -73,7 +73,8 @@ else
                     @(_running ? "Running…" : "Run graph")
                 </button>
             </div>
-            <ScriptGraphView GraphJson="@(_session.Template?.GraphJson)" ActiveNodeId="@_activeNodeId" />
+            <ScriptGraphView GraphJson="@(_session.Template?.GraphJson)" ActiveNodeId="@_activeNodeId"
+                             NodeTelemetry="@_nodeTelemetry" />
 
             @if (_metrics is { } m)
             {
@@ -102,6 +103,13 @@ else
                         <span class="kpi-label">Duration</span>
                         <span class="kpi-val">@($"{m.ElapsedMs / 1000.0:0.0}s")</span>
                     </span>
+                    @if (m.CostUsd > 0)
+                    {
+                        <span class="kpi" title="Total USD cost reported by agent runs">
+                            <span class="kpi-label">Cost</span>
+                            <span class="kpi-val">@($"${m.CostUsd:0.00##}")</span>
+                        </span>
+                    }
                 </div>
             }
 
@@ -402,6 +410,7 @@ else
     private string? _pendingApproval;
     private TaskCompletionSource<bool>? _approvalTcs;
     private ScriptRunMetrics? _metrics;
+    private readonly Dictionary<string, ScriptNodeTelemetry> _nodeTelemetry = new();
     private string? _lastError;
     private string? _fix;
     private TaskItem? _fixTask;
@@ -757,12 +766,14 @@ else
         _activeNodeId = null;
         _currentTaskId = null;
         _metrics = null;
+        _nodeTelemetry.Clear();
         _cts = new CancellationTokenSource();
         ScriptExecutor.ApprovalHandler = RequestApproval;
         await SetSessionStatus(SessionStatus.Running);
         try
         {
-            _metrics = await ScriptExecutor.RunGraphAsync(_session, GraphLog, GraphNodeActive, _cts.Token);
+            _metrics = await ScriptExecutor.RunGraphAsync(
+                _session, GraphLog, GraphNodeActive, _cts.Token, GraphNodeTelemetry);
             await SetSessionStatus(_lastError is null ? SessionStatus.Completed : SessionStatus.Failed);
         }
         catch (Exception ex)
@@ -811,6 +822,13 @@ else
         => _ = InvokeAsync(() =>
         {
             _activeNodeId = nodeId;
+            StateHasChanged();
+        });
+
+    private void GraphNodeTelemetry(ScriptNodeTelemetry telemetry)
+        => _ = InvokeAsync(() =>
+        {
+            _nodeTelemetry[telemetry.NodeId] = telemetry;
             StateHasChanged();
         });
 

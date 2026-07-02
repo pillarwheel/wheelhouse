@@ -23,10 +23,16 @@ public interface IScriptExecutor
     /// <param name="session">The session whose template carries the graph; supplies goal and repository path.</param>
     /// <param name="onLog">Invoked with human-readable log lines and their event kind.</param>
     /// <param name="onNodeActive">Invoked with the id of the node about to run (for UI highlighting).</param>
+    /// <param name="cancellationToken">Cancels the run.</param>
+    /// <param name="onNodeTelemetry">
+    /// Optional: invoked as each node finishes with its duration, attributed tokens/cost and
+    /// success flag, so the UI can show live per-node counters during the run.
+    /// </param>
     /// <returns>Telemetry for the run (node success rate, handoff errors, final compile state, …).</returns>
     Task<ScriptRunMetrics> RunGraphAsync(
         AgentSession session,
         Action<string, AgentEventKind> onLog,
         Action<string> onNodeActive,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        Action<ScriptNodeTelemetry>? onNodeTelemetry = null);
 }

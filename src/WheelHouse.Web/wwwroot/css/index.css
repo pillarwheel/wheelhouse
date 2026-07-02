@@ -415,6 +415,15 @@ textarea.input { resize: vertical; font-family: inherit; }
 .flow-node-title { font-weight: 600; font-size: 13px; }
 .flow-node-type { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.6px; }
 
+/* Live per-node telemetry badge (duration · tokens · cost), filled in as nodes finish. */
+.flow-node-telemetry {
+    display: flex; gap: 4px; align-items: center;
+    padding: 3px 10px 0;
+    font-size: 10px; color: var(--cyan);
+    white-space: nowrap; overflow: hidden;
+}
+.flow-node-telemetry.failed { color: var(--red); }
+
 .flow-ports { display: flex; justify-content: space-between; padding: 8px 0; }
 .flow-col { display: flex; flex-direction: column; gap: 0; }
 .flow-col-in { align-items: flex-start; }

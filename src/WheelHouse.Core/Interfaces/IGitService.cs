@@ -29,4 +29,26 @@ public interface IGitService
 
     /// <summary>Returns the most recent <paramref name="count"/> commits as one-line summaries.</summary>
     Task<IEnumerable<string>> GetRecentCommits(string repositoryPath, int count, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Creates a linked worktree at <paramref name="worktreePath"/> on a new
+    /// <paramref name="branch"/> based at HEAD, so a parallel agent can edit files without
+    /// colliding with the main working tree.
+    /// </summary>
+    Task<GitResult> AddWorktreeAsync(string repositoryPath, string worktreePath, string branch, CancellationToken cancellationToken = default);
+
+    /// <summary>Removes a linked worktree (forced; commit anything you want to keep first).</summary>
+    Task<GitResult> RemoveWorktreeAsync(string repositoryPath, string worktreePath, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Merges <paramref name="branch"/> into the current branch. On conflict the merge is
+    /// aborted (working tree left untouched) and the result reports failure.
+    /// </summary>
+    Task<GitResult> MergeBranchAsync(string repositoryPath, string branch, CancellationToken cancellationToken = default);
+
+    /// <summary>Deletes a local branch; <paramref name="force"/> drops unmerged work.</summary>
+    Task<GitResult> DeleteBranchAsync(string repositoryPath, string branch, bool force = false, CancellationToken cancellationToken = default);
+
+    /// <summary>Stages everything and commits (used to snapshot agent edits in a worktree).</summary>
+    Task<GitResult> CommitAllAsync(string repositoryPath, string message, CancellationToken cancellationToken = default);
 }

@@ -19,11 +19,20 @@ public class CosineVectorStore : IVectorStore
 
     public string Backend => "sqlite-cosine";
 
-    public async Task UpsertAsync(CodeIndexEntry entry, float[] vector, CancellationToken cancellationToken = default)
+    public Task UpsertAsync(CodeIndexEntry entry, float[] vector, CancellationToken cancellationToken = default)
+        => ReplaceFileAsync(entry.RepositoryPath, entry.FilePath, new[] { entry }, new[] { vector }, cancellationToken);
+
+    public async Task ReplaceFileAsync(
+        string repositoryPath, string filePath,
+        IReadOnlyList<CodeIndexEntry> entries, IReadOnlyList<float[]> vectors,
+        CancellationToken cancellationToken = default)
     {
-        await DeleteByFileAsync(entry.RepositoryPath, entry.FilePath, cancellationToken);
-        entry.EmbeddingJson = JsonSerializer.Serialize(vector);
-        _db.CodeIndex.Add(entry);
+        await DeleteByFileAsync(repositoryPath, filePath, cancellationToken);
+        for (var i = 0; i < entries.Count; i++)
+        {
+            entries[i].EmbeddingJson = JsonSerializer.Serialize(vectors[i]);
+            _db.CodeIndex.Add(entries[i]);
+        }
         await _db.SaveChangesAsync(cancellationToken);
     }
 
@@ -46,6 +55,23 @@ public class CosineVectorStore : IVectorStore
             .Select(c => c.FilePath)
             .Distinct()
             .ToListAsync(cancellationToken);
+
+    public async Task<IReadOnlyDictionary<string, string?>> GetFileHashesAsync(
+        string repositoryPath, CancellationToken cancellationToken = default)
+    {
+        var rows = await _db.CodeIndex
+            .Where(c => c.RepositoryPath == repositoryPath)
+            .Select(c => new { c.FilePath, c.ContentHash })
+            .ToListAsync(cancellationToken);
+
+        var map = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var r in rows) map[r.FilePath] = r.ContentHash;
+        return map;
+    }
+
+    public Task<IReadOnlyList<CodeSearchResult>> KeywordSearchAsync(
+        string query, int topN, string? repositoryPath, CancellationToken cancellationToken = default)
+        => CodeIndexKeywordSearch.SearchAsync(_db, query, topN, repositoryPath, cancellationToken);
 
     public async Task<IReadOnlyList<CodeSearchResult>> SearchAsync(
         float[] queryVector, int topN, string? repositoryPath, CancellationToken cancellationToken = default)

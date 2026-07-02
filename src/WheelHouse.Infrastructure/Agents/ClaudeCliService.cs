@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using WheelHouse.Core.Agents;
 using WheelHouse.Core.Interfaces;
+using WheelHouse.Infrastructure.Mcp;
 
 namespace WheelHouse.Infrastructure.Agents;
 
@@ -20,23 +21,27 @@ public class ClaudeCliService : IAgentOrchestrator
     private readonly ILogger<ClaudeCliService> _logger;
     private readonly HeadroomOptions _headroom;
     private readonly IVerificationRunner _verification;
+    private readonly McpEndpointState _mcp;
     private ResolvedExe? _claude;
     private ResolvedExe? _headroomExe;
     private bool _claudeResolved, _headroomResolved;
 
     public ClaudeCliService(
-        ILogger<ClaudeCliService> logger, HeadroomOptions headroom, IVerificationRunner verification)
+        ILogger<ClaudeCliService> logger, HeadroomOptions headroom, IVerificationRunner verification,
+        McpEndpointState mcp)
     {
         _logger = logger;
         _headroom = headroom;
         _verification = verification;
+        _mcp = mcp;
     }
 
     public async IAsyncEnumerable<AgentStreamEvent> RunAsync(
         AgentRunRequest request,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        var agentArgs = ClaudeCommand.BuildAgentArgs(request);
+        var mcpConfig = _mcp.Enabled ? _mcp.ConfigPath : null;
+        var agentArgs = ClaudeCommand.BuildAgentArgs(request, mcpConfig, _mcp.AllowedToolNames);
 
         // Decide whether to route through Headroom for token compression.
         var (exe, args, compressed, resolveError) = BuildInvocation(agentArgs);
@@ -277,7 +282,8 @@ public class ClaudeCliService : IAgentOrchestrator
             : new ResolvedExe(path, Array.Empty<string>(), path);
     }
 
-    private static AgentStreamEvent? ParseLine(string line)
+    /// <summary>Parses one NDJSON line from claude's stream-json output. Pure; public for tests.</summary>
+    public static AgentStreamEvent? ParseLine(string line)
     {
         JsonDocument doc;
         try { doc = JsonDocument.Parse(line); }
@@ -309,12 +315,40 @@ public class ClaudeCliService : IAgentOrchestrator
                     var resultText = root.TryGetProperty("result", out var r) ? r.GetString() : "(done)";
                     return new AgentStreamEvent(
                         isError ? AgentEventKind.Error : AgentEventKind.Result,
-                        resultText ?? "(done)", IsError: isError, RawJson: line);
+                        resultText ?? "(done)", IsError: isError, RawJson: line,
+                        Usage: ParseUsage(root));
 
                 default:
                     return new AgentStreamEvent(AgentEventKind.System, $"[{type}]", RawJson: line);
             }
         }
+    }
+
+    /// <summary>
+    /// Extracts token/cost/duration accounting from claude's final <c>result</c> message.
+    /// Input tokens include cache reads/writes so the number reflects what the request consumed.
+    /// </summary>
+    private static AgentUsage? ParseUsage(JsonElement root)
+    {
+        var durationMs = root.TryGetProperty("duration_ms", out var d) &&
+                         d.ValueKind == JsonValueKind.Number ? d.GetInt64() : 0L;
+        double? cost = root.TryGetProperty("total_cost_usd", out var c) &&
+                       c.ValueKind == JsonValueKind.Number ? c.GetDouble() : null;
+
+        if (root.TryGetProperty("usage", out var usage) && usage.ValueKind == JsonValueKind.Object)
+        {
+            int Count(string name) =>
+                usage.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number
+                    ? v.GetInt32() : 0;
+            return new AgentUsage(
+                Count("input_tokens") + Count("cache_read_input_tokens") + Count("cache_creation_input_tokens"),
+                Count("output_tokens"),
+                durationMs,
+                cost);
+        }
+        return durationMs > 0 || cost is not null
+            ? new AgentUsage(0, 0, durationMs, cost)
+            : null;
     }
 
     private static AgentStreamEvent? ParseMessage(JsonElement root, string line)

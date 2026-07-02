@@ -44,6 +44,37 @@ public class GitService : IGitService
         return result.Output.Split('\n', StringSplitOptions.RemoveEmptyEntries);
     }
 
+    public Task<GitResult> AddWorktreeAsync(
+        string repositoryPath, string worktreePath, string branch, CancellationToken cancellationToken = default)
+        => RunAsync(repositoryPath, cancellationToken, "worktree", "add", "-b", branch, worktreePath);
+
+    public Task<GitResult> RemoveWorktreeAsync(
+        string repositoryPath, string worktreePath, CancellationToken cancellationToken = default)
+        => RunAsync(repositoryPath, cancellationToken, "worktree", "remove", "--force", worktreePath);
+
+    public async Task<GitResult> MergeBranchAsync(
+        string repositoryPath, string branch, CancellationToken cancellationToken = default)
+    {
+        var merge = await RunAsync(repositoryPath, cancellationToken,
+            "merge", "--no-ff", "-m", $"Merge {branch} (WheelHouse parallel branch)", branch);
+        if (!merge.Success)
+            // Leave the working tree the way we found it; the branch stays for manual resolution.
+            await RunAsync(repositoryPath, cancellationToken, "merge", "--abort");
+        return merge;
+    }
+
+    public Task<GitResult> DeleteBranchAsync(
+        string repositoryPath, string branch, bool force = false, CancellationToken cancellationToken = default)
+        => RunAsync(repositoryPath, cancellationToken, "branch", force ? "-D" : "-d", branch);
+
+    public async Task<GitResult> CommitAllAsync(
+        string repositoryPath, string message, CancellationToken cancellationToken = default)
+    {
+        var add = await RunAsync(repositoryPath, cancellationToken, "add", "-A");
+        if (!add.Success) return add;
+        return await RunAsync(repositoryPath, cancellationToken, "commit", "-m", message);
+    }
+
     private async Task<GitResult> RunAsync(string repositoryPath, CancellationToken cancellationToken, params string[] args)
     {
         if (!Directory.Exists(repositoryPath))

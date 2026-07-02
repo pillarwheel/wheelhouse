@@ -4,6 +4,7 @@ using WheelHouse.Core.Models;
 using WheelHouse.Core.Models.Script;
 using WheelHouse.Infrastructure;
 using WheelHouse.Infrastructure.Configuration;
+using WheelHouse.Infrastructure.Mcp;
 using WheelHouse.Infrastructure.Persistence;
 
 namespace WheelHouse.Web;
@@ -34,11 +35,60 @@ public static class WheelHouseWebApp
         app.UseAntiforgery();
         app.MapRazorComponents<Components.App>().AddInteractiveServerRenderMode();
 
+        MapMcpEndpoint(app);
+
         if (envCount > 0)
             app.Logger.LogInformation("Loaded {Count} variable(s) from .env", envCount);
 
         EnsureDatabase(app);
         return app;
+    }
+
+    /// <summary>
+    /// Serves the WheelHouse MCP server (live code-index search for the Claude subprocess)
+    /// on <c>POST /mcp</c>, and publishes the endpoint's actual bound URL once the host has
+    /// started so Claude runs can be launched with <c>--mcp-config</c>.
+    /// </summary>
+    private static void MapMcpEndpoint(WebApplication app)
+    {
+        var state = app.Services.GetRequiredService<McpEndpointState>();
+        if (!state.Enabled)
+        {
+            app.Logger.LogInformation("MCP endpoint disabled (WHEELHOUSE_MCP=off).");
+            return;
+        }
+
+        app.MapPost("/mcp", async (HttpRequest http, WheelHouseMcpServer mcp, CancellationToken ct) =>
+        {
+            using var reader = new StreamReader(http.Body);
+            var body = await reader.ReadToEndAsync(ct);
+            var response = await mcp.HandleAsync(body, ct);
+            // Notifications get no JSON-RPC response; 202 tells the client it was accepted.
+            return response is null ? Results.Accepted() : Results.Content(response, "application/json");
+        }).DisableAntiforgery();
+
+        app.Lifetime.ApplicationStarted.Register(() =>
+        {
+            try
+            {
+                var url = app.Urls
+                    .Select(u => u.Replace("://+", "://localhost")
+                                  .Replace("://*", "://localhost")
+                                  .Replace("0.0.0.0", "localhost"))
+                    .OrderBy(u => u.StartsWith("https") ? 1 : 0) // prefer plain http locally
+                    .FirstOrDefault();
+                if (url is null) return;
+
+                state.Activate(url.TrimEnd('/') + "/mcp");
+                app.Logger.LogInformation(
+                    "MCP endpoint live at {Url}; Claude runs get --mcp-config {Config}.",
+                    state.Url, state.ConfigPath);
+            }
+            catch (Exception ex)
+            {
+                app.Logger.LogWarning(ex, "Could not activate the MCP endpoint.");
+            }
+        });
     }
 
     private static void EnsureDatabase(WebApplication app)

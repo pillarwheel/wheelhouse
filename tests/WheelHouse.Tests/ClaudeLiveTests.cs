@@ -3,6 +3,7 @@ using WheelHouse.Core.Agents;
 using WheelHouse.Core.Interfaces;
 using WheelHouse.Infrastructure.Agents;
 using WheelHouse.Infrastructure.Configuration;
+using WheelHouse.Infrastructure.Mcp;
 using WheelHouse.Infrastructure.Services;
 using Xunit;
 
@@ -25,7 +26,8 @@ public class ClaudeLiveTests
         return new ClaudeCliService(
             NullLogger<ClaudeCliService>.Instance,
             new HeadroomOptions(),
-            new PowerShellVerificationRunner(NullLogger<PowerShellVerificationRunner>.Instance));
+            new PowerShellVerificationRunner(NullLogger<PowerShellVerificationRunner>.Instance),
+            new McpEndpointState());
     }
 
     [Fact]

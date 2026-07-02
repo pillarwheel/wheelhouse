@@ -2,9 +2,13 @@ using WheelHouse.Core.Models;
 
 namespace WheelHouse.Core.Interfaces;
 
-/// <summary>A single RAG search hit with its similarity score.</summary>
+/// <summary>A single RAG search hit with its relevance score.</summary>
 /// <param name="Entry">The matched code index entry.</param>
-/// <param name="Score">Cosine similarity in [-1, 1]; higher is closer.</param>
+/// <param name="Score">
+/// Relevance; higher is better. Cosine similarity in [-1, 1] for a pure vector search,
+/// token-match fraction in (0, 1] for a pure keyword search, or a reciprocal-rank fusion
+/// score when both legs contributed. Comparable within one result list, not across lists.
+/// </param>
 public record CodeSearchResult(CodeIndexEntry Entry, double Score);
 
 /// <summary>Local semantic code search over a pluggable embedding provider + vector store.</summary>

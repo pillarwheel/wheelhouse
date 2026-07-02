@@ -40,12 +40,17 @@ public class ScriptExecutorTests
     {
         public readonly List<string> Prompts = new();
         public bool EmitError;
+        public AgentUsage? Usage; // when set, the run ends with a Result event carrying it
+        public Action<AgentRunRequest>? OnRun; // simulate agent side effects (file edits)
         public async IAsyncEnumerable<AgentStreamEvent> RunAsync(
             AgentRunRequest request, [EnumeratorCancellation] CancellationToken ct = default)
         {
             Prompts.Add(request.Prompt);
+            OnRun?.Invoke(request);
             yield return new AgentStreamEvent(AgentEventKind.AssistantText, "CLAUDE(" + request.Prompt + ")");
             if (EmitError) yield return new AgentStreamEvent(AgentEventKind.Error, "boom", IsError: true);
+            if (Usage is not null)
+                yield return new AgentStreamEvent(AgentEventKind.Result, "(done)", Usage: Usage);
             await Task.CompletedTask;
         }
         public Task<bool> IsAvailableAsync(CancellationToken ct = default) => Task.FromResult(true);
@@ -92,17 +97,21 @@ public class ScriptExecutorTests
 
     private static async Task<ScriptRunMetrics> Run(
         ScriptGraph graph, FakeGemini gem, FakeOrchestrator orch, FakeVerifier ver,
-        Func<string, Task<bool>>? approval = null, string goal = "THE GOAL")
+        Func<string, Task<bool>>? approval = null, string goal = "THE GOAL",
+        Action<ScriptNodeTelemetry>? onNodeTelemetry = null, string repositoryPath = "/repo")
     {
         var session = new AgentSession
         {
             Name = "goal-name",
             PlanningContext = goal,
-            RepositoryPath = "/repo",
+            RepositoryPath = repositoryPath,
             Template = new SessionTemplate { GraphJson = graph.ToJson() }
         };
-        var exec = new ScriptExecutor(gem, orch, ver, new TestDbFactory()) { ApprovalHandler = approval };
-        return await exec.RunGraphAsync(session, (_, _) => { }, _ => { }, CancellationToken.None);
+        var exec = new ScriptExecutor(
+            gem, orch, ver, new TestDbFactory(),
+            new GitService(Microsoft.Extensions.Logging.Abstractions.NullLogger<GitService>.Instance))
+        { ApprovalHandler = approval };
+        return await exec.RunGraphAsync(session, (_, _) => { }, _ => { }, CancellationToken.None, onNodeTelemetry);
     }
 
     // ----- Tests -----
@@ -274,6 +283,147 @@ public class ScriptExecutorTests
         var m = await Run(graph, new FakeGemini(), new FakeOrchestrator(), new FakeVerifier());
 
         Assert.True(m.HandoffErrors >= 1);
+    }
+
+    [Fact]
+    public async Task Live_Telemetry_Reports_Every_Node_With_Duration_And_Tokens()
+    {
+        var gem = new FakeGemini();
+        var orch = new FakeOrchestrator();
+        var telemetry = new List<ScriptNodeTelemetry>();
+
+        var graph = new ScriptGraph
+        {
+            Nodes =
+            {
+                N("start", "start"),
+                N("plan", "gemini-prompt", s: new() { ["Prompt"] = "Plan: {{GOAL}}" }),
+                N("exec", "claude-execute", s: new() { ["Prompt"] = "Do: {{CONTEXT}}" }),
+            },
+            Edges =
+            {
+                E("start", "Next", "plan", "Execute"),
+                E("plan", "Next", "exec", "Execute"),
+                E("start", "Goal", "plan", "Goal"),
+                E("plan", "Response", "exec", "Context"),
+            }
+        };
+
+        await Run(graph, gem, orch, new FakeVerifier(), onNodeTelemetry: telemetry.Add);
+
+        Assert.Equal(3, telemetry.Count); // one report per executed node, as it finishes
+        Assert.Equal(new[] { "start", "plan", "exec" }, telemetry.Select(t => t.NodeId));
+        Assert.All(telemetry, t => Assert.True(t.Succeeded));
+        Assert.All(telemetry, t => Assert.True(t.ElapsedMs >= 0));
+        Assert.True(telemetry.Single(t => t.NodeId == "plan").ApproxTokens > 0);  // LLM node carries tokens
+        Assert.Equal(0, telemetry.Single(t => t.NodeId == "start").ApproxTokens); // control node does not
+    }
+
+    [Fact]
+    public async Task Real_Cli_Usage_Overrides_Estimates_And_Carries_Cost()
+    {
+        var orch = new FakeOrchestrator
+        {
+            Usage = new AgentUsage(InputTokens: 1200, OutputTokens: 300, DurationMs: 1500, CostUsd: 0.042)
+        };
+        var telemetry = new List<ScriptNodeTelemetry>();
+
+        var graph = new ScriptGraph
+        {
+            Nodes =
+            {
+                N("start", "start"),
+                N("exec", "claude-execute", s: new() { ["Prompt"] = "do the thing" }),
+            },
+            Edges = { E("start", "Next", "exec", "Execute") }
+        };
+
+        var m = await Run(graph, new FakeGemini(), orch, new FakeVerifier(), onNodeTelemetry: telemetry.Add);
+
+        // Exactly the CLI-reported tokens — no chars÷4 estimate stacked on top.
+        Assert.Equal(1500, m.ApproxTokens);
+        Assert.Equal(0.042, m.CostUsd, precision: 6);
+
+        var exec = telemetry.Single(t => t.NodeId == "exec");
+        Assert.Equal(1500, exec.ApproxTokens);
+        Assert.Equal(0.042, exec.CostUsd, precision: 6);
+    }
+
+    [Fact]
+    public async Task Worktree_Parallel_Isolates_Branches_And_Merges_Their_Work_Back()
+    {
+        // Real temp git repo (skips when git is unavailable, like GitServiceTests).
+        var repo = Path.Combine(Path.GetTempPath(), $"wh_wtexec_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(repo);
+        bool Git(params string[] args)
+        {
+            try
+            {
+                var psi = new System.Diagnostics.ProcessStartInfo("git")
+                { WorkingDirectory = repo, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+                foreach (var a in args) psi.ArgumentList.Add(a);
+                using var p = System.Diagnostics.Process.Start(psi)!;
+                p.WaitForExit(15000);
+                return p.HasExited && p.ExitCode == 0;
+            }
+            catch { return false; }
+        }
+        if (!Git("init")) return;
+        Git("config", "user.email", "t@example.com");
+        Git("config", "user.name", "Test");
+        File.WriteAllText(Path.Combine(repo, "readme.md"), "base");
+        Git("add", "."); Git("commit", "-m", "init");
+
+        try
+        {
+            // Each "Claude" leaves an uncommitted file in its (isolated) working directory.
+            var orch = new FakeOrchestrator
+            {
+                OnRun = req => File.WriteAllText(
+                    Path.Combine(req.WorkingDirectory, req.Prompt.Contains("backend") ? "backend.txt" : "frontend.txt"),
+                    req.Prompt)
+            };
+
+            var graph = new ScriptGraph
+            {
+                Nodes =
+                {
+                    N("start", "start"),
+                    N("fork", "parallel", s: new() { ["Isolation"] = "worktree" }),
+                    N("back", "claude-execute", s: new() { ["Prompt"] = "backend" }),
+                    N("front", "claude-execute", s: new() { ["Prompt"] = "frontend" }),
+                    N("join", "merge"),
+                },
+                Edges =
+                {
+                    E("start", "Next", "fork", "Execute"),
+                    E("fork", "BranchA", "back", "Execute"),
+                    E("fork", "BranchB", "front", "Execute"),
+                    E("back", "Success", "join", "A"),
+                    E("front", "Success", "join", "B"),
+                }
+            };
+
+            await Run(graph, new FakeGemini(), orch, new FakeVerifier(), repositoryPath: repo);
+
+            // The agents ran in two separate worktrees, not the main tree...
+            Assert.Equal(2, orch.Prompts.Count);
+            var git = new GitService(Microsoft.Extensions.Logging.Abstractions.NullLogger<GitService>.Instance);
+
+            // ...and their (snapshot-committed) work was merged back into the main repository.
+            Assert.Equal("backend", File.ReadAllText(Path.Combine(repo, "backend.txt")));
+            Assert.Equal("frontend", File.ReadAllText(Path.Combine(repo, "frontend.txt")));
+
+            var log = (await git.GetRecentCommits(repo, 10)).ToList();
+            Assert.Equal(2, log.Count(l => l.Contains("Merge wheelhouse/parallel-")));
+
+            // Branches were deleted after a clean merge and the main tree ends clean.
+            Assert.True((await git.GetStatusAsync(repo)).Clean);
+        }
+        finally
+        {
+            try { Directory.Delete(repo, true); } catch { /* ignore */ }
+        }
     }
 
     [Fact]

@@ -16,4 +16,23 @@ public class GeminiOptions
 
     /// <summary>Requested embedding dimensionality (gemini-embedding-001 supports 128–3072).</summary>
     public int EmbeddingDimensions { get; set; } = 768;
+
+    /// <summary>
+    /// "auto"/"on" use Gemini explicit context caching for large repository contexts (default);
+    /// "off" always sends context inline.
+    /// </summary>
+    public string ContextCacheMode { get; set; } =
+        Environment.GetEnvironmentVariable("WHEELHOUSE_GEMINI_CACHE") ?? "auto";
+
+    public bool ContextCacheEnabled =>
+        !string.Equals(ContextCacheMode, "off", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Minimum context size (chars) worth caching. The API enforces a minimum cacheable token
+    /// count (~4096 tokens on 2.5 Flash ≈ 16k chars); below it, caching is refused anyway.
+    /// </summary>
+    public int ContextCacheMinChars { get; set; } = 16_000;
+
+    /// <summary>Cache TTL — long enough for a plan→fix iteration loop, short enough to bound storage cost.</summary>
+    public int ContextCacheTtlSeconds { get; set; } = 600;
 }
