@@ -40,6 +40,14 @@ It runs as a native desktop app (Photino) or in your browser (Blazor Server), ba
 ## Features
 
 - **Two-model orchestration** — Gemini for planning/research, Claude Code for execution.
+- **Cost-cascade execution (default)** — verifiable tasks try the cheap tier (Gemini, isolated in a
+  git worktree and grounded by code search) first; only failures escalate to Claude Code.
+- **Tool governance** — per-workspace MCP policy (`.wheelhouse/mcp-policy.json`) enforced at the
+  Claude launcher and the MCP server (timeouts, call budgets, audit log), plus a static security
+  audit of auto-approve command rules.
+- **Darwin mode & benchmark scorecard** — an evolutionary loop mutates the harness genome (prompts,
+  retrieval depth/balance) and can score generations against a real plan→execute→verify benchmark
+  suite; fine-tuning exports (SFT/DPO JSONL) turn transcripts into training data.
 - **Test-Driven Handoff** — plan → task checklist → Claude executes → verification command gates completion → one-click "Ask Gemini for a fix" on failure.
 - **Autonomous execution & permissions** — per-workspace Claude permission mode (`acceptEdits` by default) and auto-approve rules that map to Claude `--allowedTools` / `--disallowedTools`.
 - **Token compression (optional)** — routes Claude through [Headroom](https://github.com/headroomlabs-ai/headroom) (`headroom wrap claude`) to cut context tokens; auto-detected with graceful fallback.
@@ -64,7 +72,7 @@ cd wheelhouse
 cp .env.example .env          # then fill in keys (see Configuration)
 
 dotnet build
-dotnet test                   # 190 offline tests
+dotnet test                   # 199 offline tests
 
 # Desktop app (native window):
 dotnet run --project src/WheelHouse.Desktop
@@ -90,6 +98,7 @@ Copy [`.env.example`](.env.example) to `.env`. Real OS environment variables ove
 | `WHEELHOUSE_WATCH` | `auto` (default) — re-index workspaces automatically when source files change; `off` disables |
 | `WHEELHOUSE_MCP` | `auto` (default) — expose the code index to Claude as MCP tools (`search_code`, `get_knowledge`); `off` disables |
 | `WHEELHOUSE_GEMINI_CACHE` | `auto` (default) — cache large repository contexts server-side (Gemini explicit caching) across plan/fix calls; `off` disables |
+| `WHEELHOUSE_CASCADE` | `auto` (default) — try the cheap Gemini tier before Claude on verifiable tasks; `off` always routes straight to Claude Code |
 
 ### In-app Settings
 Branding (company name, product name, tagline) and the default workspace permission mode are
@@ -133,7 +142,7 @@ Schema changes go through EF migrations (applied on startup), so updates never d
 
 ## Testing
 ```bash
-dotnet test                                   # 190 fast, offline tests
+dotnet test                                   # 199 fast, offline tests
 WHEELHOUSE_LIVE_TESTS=1 dotnet test           # also runs gated live API tests (needs keys/login)
 ```
 

@@ -280,40 +280,55 @@ All four genome fields now drive the harness:
 - Covered by `GenomeWiringTests`: weighted-fusion ranking, end-to-end KeywordWeight re-balancing,
   parameters-bag mapping, and byte-identical requests for default-genome vs no-genome.
 
-### 2.5 Real benchmark execution (the `simulate` flag is ignored)
-`RunBenchmarkAsync` returns canned numbers for every config regardless of the toggle. Implement
-`simulate=false`: materialize each challenge in a temp sandbox repo (or worktree), run the actual
-orchestrator (`Cascade`/`ClaudeOnly`/`GeminiOnly`) with the challenge's verification command, and
-report real pass/duration/cost from `AgentUsage`. Gate behind the live-test env var pattern.
+### 2.5 Real benchmark execution — ✅ Shipped
+`simulate=false` now runs the genuine pipeline per challenge: seed files are materialized into a
+temp sandbox, Gemini plans (honoring an optional `HarnessGenome` — the 2.4 wiring), the requested
+keyed orchestrator (`Cascade` / `ClaudeCode`) executes, and the challenge's verification command
+decides pass/fail; cost aggregates from real `AgentUsage` events and sandboxes are always cleaned
+up. The five built-in challenges were rewritten as self-contained file tasks with inline
+PowerShell checks (no package restore, exit 0 only on a genuine solve) and gained `SeedFiles`.
+`GeminiOnly` is explicitly simulation-only (there is no Gemini-only orchestrator); the dashboard
+surfaces that plus a cost warning when real mode is selected. Simulation mode is unchanged.
+Covered offline by `BenchmarkRealModeTests` (fakes prove seeding/cleanup, keyed routing, cost
+aggregation, and failure accounting).
 
-### 2.6 Close the self-improvement loop
-With 2.4 + 2.5: replace `DarwinService.Evaluate`'s rule-based-plus-noise scoring with real
-benchmark runs of the mutated genome. That converts Darwin from a demo into the actual
-evolutionary harness the feature promises. (Keep the simulated scorer as the fast default.)
+### 2.6 Close the self-improvement loop — ✅ Shipped
+`DarwinService.EvolveGenerationAsync(simulate: false)` now scores baseline vs. mutant with real
+benchmark runs (`RunBenchmarkAsync("Cascade", simulate: false, genome)`): the mutant is persisted
+only on a strictly better solve rate, or the same solve rate at lower cost. The fast rule-based
+scorer remains the default for instant simulated generations. Covered by
+`BenchmarkRealModeTests.Darwin_Real_Fitness_Persists_The_Mutant_Only_When_It_Wins`.
+Caveat, stated honestly: one real generation = two full benchmark suites = ten live agent runs —
+minutes of wall-clock and real quota per generation. The Darwin page's simulation toggle governs
+which tier you get.
 
 ## P2 — Quality & integration polish
 
-### 2.7 Ground the cascade's cheap tier in the RAG index
-The identify-files step asks Gemini blind. Use `IVectorSearchService.SearchAsync` (hybrid
-retrieval, shipped in Phase 1) to shortlist candidate files, and reuse Gemini context caching
-for the file-contents prompt. Also emit `AgentUsage` events from the cheap tier so cascade
-savings appear in the live telemetry and cost KPIs instead of being invisible.
+### 2.7 Ground the cascade's cheap tier in the RAG index — ✅ Shipped
+The identify-files step no longer asks Gemini blind: the cascade queries the hybrid index
+(`IVectorSearchService.SearchAsync`, top 8, workspace-relative paths) and feeds the shortlist
+into the identify prompt; when the model returns nothing parseable, the shortlist itself is
+used. The cheap tier also emits an estimated `AgentUsage` event (chars÷4 tokens, wall-clock
+duration, no invented cost) so cascade attempts show up in the live per-node telemetry instead
+of being invisible. Covered by new `CascadeOrchestrationServiceTests` cases.
 
-### 2.8 Cascade lacks an off switch
-Default flipped from `ClaudeCode` to `Cascade` with no setting. Add a workspace/app setting (and
-honor per-template `ServiceName`, which already works) so users can opt out of cheap-tier writes.
+### 2.8 Cascade off switch — ✅ Shipped
+`WHEELHOUSE_CASCADE=off` (via `CascadeOptions`, same pattern as the other feature switches)
+routes every task straight to Claude Code — no cheap-tier writes at all. Per-template
+`ServiceName` overrides continue to work. Documented in README + `.env.example`.
 
-### 2.9 Documentation & housekeeping
-README test count is kept current (190 as of 2.4), but A–F remain undocumented in the README
-feature list and `architectural_suggestions.md` should absorb the six features once hardened.
-The A–F work plus the Phase 2 hardening (2.1–2.4) is uncommitted — P0 has landed, so it can be
-committed now. The parser-consolidation background task (3.5) is still outstanding and now must
-merge around `CascadeOrchestrationService`'s new Gemini usage.
+### 2.9 Documentation & housekeeping — ✅ Done
+README now lists the cascade, tool governance, and Darwin/benchmark features and documents
+`WHEELHOUSE_CASCADE`; test counts kept current. Remaining loose end: the long-outstanding
+parser-consolidation background task (3.5) — likely simpler to redo fresh against current main
+than to merge.
 
 ## Suggested order
 
 ```
 P0: 2.1 worktree-isolated cheap tier ✅ → 2.2 path containment ✅
-P1: 2.3 policy enforcement ✅ → 2.4 genome consumption ✅ → 2.5 real benchmarks → 2.6 Darwin fitness
-P2: 2.7 RAG-grounded cascade + usage events → 2.8 off switch → 2.9 docs + commit
+P1: 2.3 policy enforcement ✅ → 2.4 genome consumption ✅ → 2.5 real benchmarks ✅ → 2.6 Darwin fitness ✅
+P2: 2.7 RAG-grounded cascade + usage events ✅ → 2.8 off switch ✅ → 2.9 docs ✅
+
+Phase 2 complete (2026-07-07): all nine items shipped.
 ```

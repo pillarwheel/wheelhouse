@@ -49,6 +49,7 @@ public static class DependencyInjection
 
         services.AddSingleton<ICodeCompressionService, CodeCompressionService>();
         services.AddSingleton(new HeadroomOptions());
+        services.AddSingleton(new CascadeOptions());
         services.AddSingleton(new McpEndpointState());
         services.AddSingleton<WheelHouseMcpServer>();
         services.AddSingleton<IAgentOrchestrator, ClaudeCliService>();

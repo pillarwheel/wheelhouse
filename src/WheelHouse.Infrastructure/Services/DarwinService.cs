@@ -7,6 +7,9 @@ namespace WheelHouse.Infrastructure.Services;
 
 /// <summary>
 /// Implements <see cref="IDarwinService"/> to manage evolutionary genome optimization.
+/// Fitness comes in two tiers: a fast rule-based simulation (default), and — with
+/// <c>simulate=false</c> — real benchmark runs of baseline vs. mutant through the actual
+/// plan→execute→verify pipeline, which is what makes evolution optimize real outcomes.
 /// </summary>
 public class DarwinService : IDarwinService
 {
@@ -17,6 +20,10 @@ public class DarwinService : IDarwinService
     };
 
     private static readonly Random _rand = new();
+
+    private readonly IBenchmarkService _benchmark;
+
+    public DarwinService(IBenchmarkService benchmark) => _benchmark = benchmark;
 
     public async Task<HarnessGenome> LoadGenomeAsync(string repositoryPath, CancellationToken cancellationToken = default)
     {
@@ -74,7 +81,11 @@ public class DarwinService : IDarwinService
         // Mutate the genome
         var mutated = CloneAndMutate(baseline);
 
-        // Evaluate both
+        if (!simulate)
+            return await EvolveAgainstRealBenchmarkAsync(
+                repositoryPath, generation, baseline, mutated, cancellationToken);
+
+        // Fast rule-based evaluation (deterministic-ish, offline).
         var (baselineScore, baselinePassed) = Evaluate(baseline, simulate);
         var (mutatedScore, mutatedPassed) = Evaluate(mutated, simulate);
 
@@ -89,6 +100,35 @@ public class DarwinService : IDarwinService
         {
             return new EvolutionGenerationResult(generation, baseline, baselineScore, baselinePassed, 3, false);
         }
+    }
+
+    /// <summary>
+    /// Real fitness: run the benchmark suite (Cascade pipeline, live agents) once with the
+    /// baseline genome and once with the mutant. The mutant wins on a strictly better solve
+    /// rate, or the same solve rate at lower cost; only a winning mutant is persisted.
+    /// </summary>
+    private async Task<EvolutionGenerationResult> EvolveAgainstRealBenchmarkAsync(
+        string repositoryPath, int generation, HarnessGenome baseline, HarnessGenome mutated,
+        CancellationToken cancellationToken)
+    {
+        var baselineReport = await _benchmark.RunBenchmarkAsync(
+            "Cascade", simulate: false, baseline, cancellationToken);
+        var mutatedReport = await _benchmark.RunBenchmarkAsync(
+            "Cascade", simulate: false, mutated, cancellationToken);
+
+        var isImprovement =
+            mutatedReport.SolveRate > baselineReport.SolveRate ||
+            (mutatedReport.SolveRate == baselineReport.SolveRate &&
+             mutatedReport.TotalCost < baselineReport.TotalCost);
+
+        var winner = isImprovement ? mutated : baseline;
+        var report = isImprovement ? mutatedReport : baselineReport;
+
+        if (isImprovement)
+            await SaveGenomeAsync(repositoryPath, mutated, cancellationToken);
+
+        return new EvolutionGenerationResult(
+            generation, winner, report.SolveRate * 100.0, report.Solved, report.Total, isImprovement);
     }
 
     private static HarnessGenome CloneAndMutate(HarnessGenome source)

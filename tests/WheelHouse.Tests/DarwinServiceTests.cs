@@ -1,3 +1,4 @@
+using WheelHouse.Core.Interfaces;
 using WheelHouse.Core.Models;
 using WheelHouse.Infrastructure.Services;
 using Xunit;
@@ -6,6 +7,17 @@ namespace WheelHouse.Tests;
 
 public class DarwinServiceTests
 {
+    /// <summary>The simulate paths must never touch the benchmark service.</summary>
+    private sealed class ThrowingBenchmark : IBenchmarkService
+    {
+        public IReadOnlyList<BenchmarkChallenge> GetBuiltInChallenges() => Array.Empty<BenchmarkChallenge>();
+        public Task<BenchmarkReport> RunBenchmarkAsync(
+            string configName, bool simulate = true, HarnessGenome? genome = null, CancellationToken ct = default)
+            => throw new InvalidOperationException("simulated evolution must not run benchmarks");
+    }
+
+    private static DarwinService NewService() => new(new ThrowingBenchmark());
+
     [Fact]
     public async Task Loads_Default_Genome_If_Missing_And_Saves_Changes()
     {
@@ -14,7 +26,7 @@ public class DarwinServiceTests
         Directory.CreateDirectory(tempDir);
         try
         {
-            var service = new DarwinService();
+            var service = NewService();
 
             // Act: Load missing genome
             var genome = await service.LoadGenomeAsync(tempDir);
@@ -53,7 +65,7 @@ public class DarwinServiceTests
         Directory.CreateDirectory(tempDir);
         try
         {
-            var service = new DarwinService();
+            var service = NewService();
 
             // Initial baseline load (saves defaults)
             var baseline = await service.LoadGenomeAsync(tempDir);

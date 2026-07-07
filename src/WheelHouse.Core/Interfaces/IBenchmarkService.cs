@@ -26,5 +26,13 @@ public record BenchmarkReport(
 public interface IBenchmarkService
 {
     IReadOnlyList<BenchmarkChallenge> GetBuiltInChallenges();
-    Task<BenchmarkReport> RunBenchmarkAsync(string configName, bool simulate = true, CancellationToken cancellationToken = default);
+
+    /// <param name="configName">Cascade, ClaudeOnly, or GeminiOnly (GeminiOnly is simulation-only).</param>
+    /// <param name="simulate">True returns modeled numbers instantly; false runs the real plan→execute→verify pipeline per challenge in a temp sandbox (slow, uses live agents).</param>
+    /// <param name="genome">Optional harness genome applied to the planning stage — this is what lets Darwin evaluate mutations against real outcomes.</param>
+    Task<BenchmarkReport> RunBenchmarkAsync(
+        string configName,
+        bool simulate = true,
+        HarnessGenome? genome = null,
+        CancellationToken cancellationToken = default);
 }

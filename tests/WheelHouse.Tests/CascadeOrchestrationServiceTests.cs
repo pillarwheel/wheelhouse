@@ -14,12 +14,15 @@ public class CascadeOrchestrationServiceTests : IDisposable
     private readonly FakeGeminiService _geminiService = new();
     private readonly FakeGitService _gitService = new();
     private readonly FakeVerificationRunner _verificationRunner = new();
+    private readonly FakeSearchService _searchService = new();
+    private readonly CascadeOptions _options = new();
     private readonly CascadeOrchestrationService _service;
     private readonly string _workspace;
 
     public CascadeOrchestrationServiceTests()
     {
-        _service = new CascadeOrchestrationService(_claudeService, _geminiService, _gitService, _verificationRunner);
+        _service = new CascadeOrchestrationService(
+            _claudeService, _geminiService, _gitService, _verificationRunner, _searchService, _options);
         _workspace = Path.Combine(Path.GetTempPath(), "wheelhouse-cascade-tests", Guid.NewGuid().ToString("N")[..8]);
         Directory.CreateDirectory(_workspace);
     }
@@ -36,6 +39,53 @@ public class CascadeOrchestrationServiceTests : IDisposable
     private static void TryDelete(string path)
     {
         try { if (Directory.Exists(path)) Directory.Delete(path, recursive: true); } catch { }
+    }
+
+    [Fact]
+    public async Task Cascade_Off_Switch_Routes_Straight_To_Claude()
+    {
+        _options.Mode = "off";
+        var request = new AgentRunRequest("Fix bug", _workspace, VerificationCommand: "dotnet test");
+
+        var events = await ToListAsync(_service.RunAsync(request));
+
+        Assert.Contains(events, e => e.Text.Contains("WHEELHOUSE_CASCADE=off"));
+        Assert.Empty(_geminiService.Prompts); // cheap tier never ran
+        Assert.Single(_claudeService.Runs);
+    }
+
+    [Fact]
+    public async Task Rag_Shortlist_Grounds_The_Identify_Step()
+    {
+        // The index knows about src/Payment.cs; the identify prompt should carry it.
+        Directory.CreateDirectory(Path.Combine(_workspace, "src"));
+        _searchService.Hits.Add(new CodeSearchResult(
+            new CodeIndexEntry { FilePath = Path.Combine(_workspace, "src", "Payment.cs") }, 0.9));
+
+        var request = new AgentRunRequest("Fix billing bug", _workspace, VerificationCommand: "dotnet test");
+        _geminiService.Responses.Enqueue("not json at all — unusable");
+        _geminiService.Responses.Enqueue("FILE: src/Payment.cs\nCONTENT:\nfixed\nEND_FILE");
+        _verificationRunner.Result = new VerificationResult(0, "Passed", false);
+
+        var events = await ToListAsync(_service.RunAsync(request));
+
+        Assert.Contains("Payment.cs", _geminiService.Prompts[0]); // shortlist reached the model
+        Assert.Contains(events, e => e.Text.Contains("shortlisted 1 candidate"));
+    }
+
+    [Fact]
+    public async Task Cheap_Tier_Emits_Estimated_Usage_Telemetry()
+    {
+        var request = new AgentRunRequest("Fix bug", _workspace, VerificationCommand: "dotnet test");
+        _geminiService.Responses.Enqueue("[\"src/Temp.cs\"]");
+        _geminiService.Responses.Enqueue("FILE: src/Temp.cs\nCONTENT:\npublic class Temp {}\nEND_FILE");
+        _verificationRunner.Result = new VerificationResult(0, "Passed", false);
+
+        var events = await ToListAsync(_service.RunAsync(request));
+
+        var usage = events.Single(e => e.Usage is not null).Usage!;
+        Assert.True(usage.TotalTokens > 0);
+        Assert.Null(usage.CostUsd); // estimated tokens, no invented dollars
     }
 
     [Fact]
@@ -229,6 +279,17 @@ public class CascadeOrchestrationServiceTests : IDisposable
         {
             return Task.FromResult((0, "Verify Passed"));
         }
+    }
+
+    private class FakeSearchService : IVectorSearchService
+    {
+        public List<CodeSearchResult> Hits { get; } = new();
+        public string Backend => "fake";
+        public Task<int> IndexFileAsync(string r, string f, CancellationToken ct = default) => Task.FromResult(0);
+        public Task<int> IndexRepositoryAsync(string r, CancellationToken ct = default) => Task.FromResult(0);
+        public Task<IReadOnlyList<CodeSearchResult>> SearchAsync(
+            string q, int topN = 5, string? repo = null, double keywordWeight = 0.5, CancellationToken ct = default)
+            => Task.FromResult((IReadOnlyList<CodeSearchResult>)Hits);
     }
 
     private class FakeGeminiService : IGeminiService

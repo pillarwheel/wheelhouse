@@ -33,6 +33,17 @@
                 Simulated Sandbox (Offline-Safe)
             </label>
         </div>
+        @if (!_simulate)
+        {
+            <p class="muted small" style="margin-top: 0.75rem;">
+                Real mode runs every challenge through the live plan → execute → verify pipeline in a
+                temp sandbox — it is slow and uses your Gemini/Claude quota. GeminiOnly is simulation-only.
+            </p>
+        }
+        @if (_error is not null)
+        {
+            <p class="small" style="margin-top: 0.75rem; color: var(--red);">@_error</p>
+        }
     </div>
 
     <div class="panel">
@@ -117,14 +128,22 @@
     private bool _simulate = true;
     private bool _running;
     private BenchmarkReport? _report;
+    private string? _error;
 
     private async Task RunBenchmark()
     {
         if (_running) return;
         _running = true;
+        _error = null;
         try
         {
+            // Real runs load the workspace-independent default genome (the Darwin page evolves
+            // per-repository genomes; here we benchmark the harness configuration itself).
             _report = await BenchmarkService.RunBenchmarkAsync(_configName, _simulate);
+        }
+        catch (InvalidOperationException ex)
+        {
+            _error = ex.Message; // e.g. GeminiOnly is simulation-only for real runs
         }
         finally
         {

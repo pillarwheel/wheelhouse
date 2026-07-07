@@ -23,6 +23,8 @@ public class CascadeOrchestrationService : ITaskOrchestrationService
     private readonly IGeminiService _geminiService;
     private readonly IGitService _gitService;
     private readonly IVerificationRunner _verificationRunner;
+    private readonly IVectorSearchService _search;
+    private readonly CascadeOptions _options;
 
     private static readonly StringComparison PathComparison =
         OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
@@ -34,18 +36,32 @@ public class CascadeOrchestrationService : ITaskOrchestrationService
         [FromKeyedServices("ClaudeCode")] ITaskOrchestrationService claudeService,
         IGeminiService geminiService,
         IGitService gitService,
-        IVerificationRunner verificationRunner)
+        IVerificationRunner verificationRunner,
+        IVectorSearchService search,
+        CascadeOptions options)
     {
         _claudeService = claudeService;
         _geminiService = geminiService;
         _gitService = gitService;
         _verificationRunner = verificationRunner;
+        _search = search;
+        _options = options;
     }
 
     public async IAsyncEnumerable<AgentStreamEvent> RunAsync(
         AgentRunRequest request,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
+        if (!_options.Enabled)
+        {
+            yield return new AgentStreamEvent(AgentEventKind.System, "Cascade: Cheap tier disabled (WHEELHOUSE_CASCADE=off). Routing task directly to Claude Code.");
+            await foreach (var evt in _claudeService.RunAsync(request, cancellationToken))
+            {
+                yield return evt;
+            }
+            yield break;
+        }
+
         if (string.IsNullOrWhiteSpace(request.VerificationCommand))
         {
             yield return new AgentStreamEvent(AgentEventKind.System, "Cascade: No verification command specified. Routing task directly to Claude Code.");
@@ -112,18 +128,47 @@ public class CascadeOrchestrationService : ITaskOrchestrationService
 
         bool cheapSuccess = false;
         bool preserveBranch = false;
+        var cheapSw = System.Diagnostics.Stopwatch.StartNew();
+        long promptChars = 0, responseChars = 0;
         try
         {
+            // Ground the file-identification step in the hybrid RAG index instead of asking
+            // Gemini blind: the index knows this repository, the model does not.
+            var ragCandidates = new List<string>();
+            try
+            {
+                var hits = await _search.SearchAsync(
+                    request.Prompt, topN: 8, workspaceRoot, cancellationToken: cancellationToken);
+                ragCandidates = hits
+                    .Select(h => Path.GetRelativePath(workspaceRoot, h.Entry.FilePath))
+                    .Where(p => !p.StartsWith("..", StringComparison.Ordinal))
+                    .Distinct(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal)
+                    .Take(8)
+                    .ToList();
+            }
+            catch { /* index unavailable — proceed without grounding */ }
+
+            if (ragCandidates.Count > 0)
+                cheapEvents.Add(new AgentStreamEvent(AgentEventKind.System,
+                    $"Cascade: Code search shortlisted {ragCandidates.Count} candidate file(s): {string.Join(", ", ragCandidates)}"));
+
             // Step 1: Ask Gemini to identify which files need to be read or edited
             var identifyPrompt =
                 $"You are a code analysis helper. Given the following user task in a repository:\n" +
                 $"---\n{request.Prompt}\n---\n" +
+                (ragCandidates.Count > 0
+                    ? "Semantic code search over this repository suggests these files are the most relevant:\n" +
+                      string.Join("\n", ragCandidates) + "\n\n"
+                    : "") +
                 $"Which files in the repository do you need to read or edit to complete this task?\n" +
                 $"Return the relative file paths as a JSON array of strings. Do not include any other text, explanations, or markdown. Only return the JSON array.\n" +
                 $"Example:\n[\"src/Common.cs\", \"tests/CommonTests.cs\"]";
 
             var identifyResponse = await _geminiService.CompleteAsync(identifyPrompt, cancellationToken);
+            promptChars += identifyPrompt.Length;
+            responseChars += identifyResponse.Length;
             var files = ParseFileList(identifyResponse);
+            if (files.Count == 0) files = ragCandidates; // model gave nothing usable — trust the index
 
             // Step 2: Read target files from disk (workspace-contained paths only)
             var contextBuilder = new StringBuilder();
@@ -165,6 +210,8 @@ public class CascadeOrchestrationService : ITaskOrchestrationService
                 $"Write the complete contents of the file, not just the changes. Do not include any explanation or other text.";
 
             var implementResponse = await _geminiService.CompleteAsync(implementPrompt, cancellationToken);
+            promptChars += implementPrompt.Length;
+            responseChars += implementResponse.Length;
             var rejectedPaths = ApplyFileEdits(executionDir, implementResponse, appliedEdits);
             foreach (var rejected in rejectedPaths)
             {
@@ -224,6 +271,17 @@ public class CascadeOrchestrationService : ITaskOrchestrationService
         catch (Exception ex)
         {
             cheapEvents.Add(new AgentStreamEvent(AgentEventKind.Error, $"Cascade: Cheap tier execution failed: {ex.Message}. Reverting and escalating...", IsError: true));
+        }
+
+        // Account for the cheap tier in the run telemetry (chars÷4 estimate — the Gemini
+        // wrapper returns text, not usage). Cost is left null rather than invented.
+        if (promptChars + responseChars > 0)
+        {
+            var usage = new AgentUsage(
+                (int)(promptChars / 4), (int)(responseChars / 4), cheapSw.ElapsedMilliseconds, CostUsd: null);
+            cheapEvents.Add(new AgentStreamEvent(AgentEventKind.System,
+                $"Cascade: Cheap tier used ~{usage.TotalTokens:N0} tokens (estimated) in {cheapSw.ElapsedMilliseconds:N0} ms.",
+                Usage: usage));
         }
 
         // Worktree cleanup (both outcomes): the workspace itself was never written to.
