@@ -27,7 +27,8 @@ public class ClaudeLiveTests
             NullLogger<ClaudeCliService>.Instance,
             new HeadroomOptions(),
             new PowerShellVerificationRunner(NullLogger<PowerShellVerificationRunner>.Instance),
-            new McpEndpointState());
+            new McpEndpointState(),
+            new McpPolicyService());
     }
 
     [Fact]

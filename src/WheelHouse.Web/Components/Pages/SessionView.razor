@@ -619,8 +619,16 @@ else
         try
         {
             // RAG: enrich the planning context with semantically relevant code from the repo.
-            var context = await BuildPlanningContext();
-            var plan = await FlowResolver.GetPlanningService(_session).GenerateResearchPlanAsync(_goal, context);
+            // The Darwin genome tunes retrieval depth/balance and the planning prompts.
+            var genome = await LoadGenomeAsync();
+            var context = await BuildPlanningContext(genome);
+            var parameters = new Dictionary<string, string>
+            {
+                ["systemPreamble"] = genome.GeminiSystemPreamble,
+                ["planningTemplate"] = genome.PlanningPromptTemplate
+            };
+            var plan = await FlowResolver.GetPlanningService(_session)
+                .GenerateResearchPlanAsync(_goal, context, parameters);
             _session.PlanningContext = plan;
 
             await using var db = await DbFactory.CreateDbContextAsync();
@@ -635,7 +643,22 @@ else
         finally { _planning = false; }
     }
 
-    private async Task<string> BuildPlanningContext()
+    private async Task<HarnessGenome> LoadGenomeAsync()
+    {
+        if (_session is null) return new HarnessGenome();
+        try
+        {
+            await using var scope = ScopeFactory.CreateAsyncScope();
+            return await scope.ServiceProvider.GetRequiredService<IDarwinService>()
+                .LoadGenomeAsync(_session.RepositoryPath);
+        }
+        catch
+        {
+            return new HarnessGenome(); // defaults ≡ canonical behavior
+        }
+    }
+
+    private async Task<string> BuildPlanningContext(HarnessGenome genome)
     {
         _ragSnippetCount = 0;
         if (_session is null || string.IsNullOrWhiteSpace(_goal))
@@ -660,7 +683,10 @@ else
         {
             await using var scope = ScopeFactory.CreateAsyncScope();
             var search = scope.ServiceProvider.GetRequiredService<IVectorSearchService>();
-            var hits = await search.SearchAsync(_goal, topN: 5, repositoryPath: _session.RepositoryPath);
+            var hits = await search.SearchAsync(_goal,
+                topN: Math.Clamp(genome.RagTopN, 1, 20),
+                repositoryPath: _session.RepositoryPath,
+                keywordWeight: genome.KeywordWeight);
             _ragSnippetCount = hits.Count;
             return knowledgeContext + RagContext.Build(_session.RepositoryPath, hits);
         }
@@ -888,7 +914,7 @@ else
             if (!string.IsNullOrWhiteSpace(_session.PlanningContext))
                 prompt += $"\n\nOverall plan for context:\n{_session.PlanningContext}";
 
-            var err = await StreamRun(prompt);
+            var err = await StreamRun(prompt, task.VerificationCommand);
             if (err is not null)
             {
                 await SetTaskStatus(task, WorkItemStatus.Failed);
@@ -944,7 +970,7 @@ else
         }
     }
 
-    private async Task<string?> StreamRun(string prompt)
+    private async Task<string?> StreamRun(string prompt, string? verificationCommand = null)
     {
         _running = true;
         _lastError = null;
@@ -956,7 +982,8 @@ else
                 prompt, _session!.RepositoryPath,
                 PermissionMode: _permissionMode,
                 AllowedTools: _allowedTools.Count > 0 ? _allowedTools : null,
-                DisallowedTools: _disallowedTools.Count > 0 ? _disallowedTools : null);
+                DisallowedTools: _disallowedTools.Count > 0 ? _disallowedTools : null,
+                VerificationCommand: verificationCommand);
             await foreach (var evt in FlowResolver.GetOrchestrationService(_session).RunAsync(request, _cts.Token))
             {
                 Emit(evt);

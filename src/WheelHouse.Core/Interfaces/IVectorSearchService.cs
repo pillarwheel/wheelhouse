@@ -28,11 +28,17 @@ public interface IVectorSearchService
         string repositoryPath,
         CancellationToken cancellationToken = default);
 
-    /// <summary>Returns the top-N most semantically similar snippets to the query.</summary>
+    /// <summary>Returns the top-N most relevant snippets for the query (hybrid retrieval).</summary>
+    /// <param name="keywordWeight">
+    /// Balance between the keyword and semantic legs in [0, 1]: 0.5 is neutral (classic RRF),
+    /// higher favors exact-identifier matches, lower favors semantic similarity. Tunable via
+    /// the Darwin genome's <c>KeywordWeight</c>.
+    /// </param>
     Task<IReadOnlyList<CodeSearchResult>> SearchAsync(
         string query,
         int topN = 5,
         string? repositoryPath = null,
+        double keywordWeight = 0.5,
         CancellationToken cancellationToken = default);
 }
 

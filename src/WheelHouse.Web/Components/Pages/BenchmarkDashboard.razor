@@ -1,0 +1,134 @@
+@page "/benchmark"
+@inject WheelHouse.Core.Interfaces.IBenchmarkService BenchmarkService
+
+<PageTitle>WheelHouse — Behavioral Research Benchmark</PageTitle>
+
+<header class="page-head">
+    <div>
+        <h1>Behavioral Research Benchmark</h1>
+        <p class="muted">Test and audit planning and execution solve rates across different models and cascading strategies in a local task sandbox.</p>
+    </div>
+</header>
+
+<section class="grid two-col">
+    <div class="panel">
+        <div class="panel-head"><h2>Benchmark Configuration</h2></div>
+        <p class="muted">Select the orchestration config strategy to evaluate against the built-in coding challenge suite.</p>
+        
+        <label class="field" style="margin-top: 1rem;">
+            <span class="field-name">Orchestration Config</span>
+            <select class="input" @bind="_configName">
+                <option value="Cascade">Cascade (Gemini 2.5 Flash trial -> Claude fallback)</option>
+                <option value="ClaudeOnly">Claude 3.5 Sonnet Only (High solve rate, high cost)</option>
+                <option value="GeminiOnly">Gemini 2.5 Flash Only (Low cost, fast, basic logic)</option>
+            </select>
+        </label>
+
+        <div class="row" style="margin-top: 1.5rem; gap: 1rem; align-items: center;">
+            <button class="btn primary" @onclick="RunBenchmark" disabled="@_running">
+                @(_running ? "Running suite..." : "Run Benchmark Suite")
+            </button>
+            <label style="display: flex; gap: 0.5rem; align-items: center; font-size: 0.9em;">
+                <input type="checkbox" @bind="_simulate" />
+                Simulated Sandbox (Offline-Safe)
+            </label>
+        </div>
+    </div>
+
+    <div class="panel">
+        <div class="panel-head"><h2>Benchmark Summary Scorecard</h2></div>
+        @if (_report is not null)
+        {
+            <div class="grid two-col" style="margin-top: 1rem; gap: 1rem;">
+                <div class="card" style="padding: 1rem; text-align: center;">
+                    <div class="muted small">Solve Rate</div>
+                    <div style="font-size: 2.2em; font-weight: bold; color: var(--accent-color);">
+                        @(_report.SolveRate.ToString("0.0%"))
+                    </div>
+                    <div class="muted small">@_report.Solved / @_report.Total Solved</div>
+                </div>
+                <div class="card" style="padding: 1rem; text-align: center;">
+                    <div class="muted small">Average Solve Time</div>
+                    <div style="font-size: 2.2em; font-weight: bold;">
+                        @((_report.AvgDurationMs / 1000.0).ToString("0.00"))s
+                    </div>
+                </div>
+            </div>
+            <div class="card" style="padding: 1rem; margin-top: 1rem; text-align: center;">
+                <div class="muted small">Total Suite Execution Cost</div>
+                <div style="font-size: 1.8em; font-weight: bold; color: var(--accent-warn);">
+                    $@_report.TotalCost.ToString("0.0000")
+                </div>
+            </div>
+        }
+        else
+        {
+            <div class="empty-state" style="padding: 2rem;"><p class="muted">No benchmark report run yet.</p></div>
+        }
+    </div>
+</section>
+
+@if (_report is not null)
+{
+    <section class="panel" style="margin-top: 2rem;">
+        <div class="panel-head"><h2>Challenge Execution Details</h2></div>
+        <table class="table" style="width: 100%; border-collapse: collapse; margin-top: 1rem;">
+            <thead>
+                <tr style="border-bottom: 2px solid var(--border-color); text-align: left;">
+                    <th style="padding: 0.8rem;">Status</th>
+                    <th style="padding: 0.8rem;">Challenge</th>
+                    <th style="padding: 0.8rem;">Duration</th>
+                    <th style="padding: 0.8rem;">Cost</th>
+                    <th style="padding: 0.8rem;">Execution Log</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var res in _report.Results)
+                {
+                    <tr style="border-bottom: 1px solid var(--border-color);">
+                        <td style="padding: 0.8rem;">
+                            @if (res.Passed)
+                            {
+                                <span class="tag success" style="background: color-mix(in srgb, var(--accent-color) 15%, transparent); color: var(--accent-color); border: 1px solid var(--accent-color);">PASS</span>
+                            }
+                            else
+                            {
+                                <span class="tag warn" style="background: color-mix(in srgb, var(--accent-warn) 15%, transparent); color: var(--accent-warn); border: 1px solid var(--accent-warn);">FAIL</span>
+                            }
+                        </td>
+                        <td style="padding: 0.8rem;">
+                            <strong>@res.Title</strong>
+                            <div class="muted small" style="font-size: 0.85em;">ID: @res.ChallengeId</div>
+                        </td>
+                        <td style="padding: 0.8rem;">@((res.DurationMs / 1000.0).ToString("0.00"))s</td>
+                        <td style="padding: 0.8rem;">$@res.Cost.ToString("0.0000")</td>
+                        <td style="padding: 0.8rem; font-family: monospace; font-size: 0.85em; max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                            @res.Logs
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </section>
+}
+
+@code {
+    private string _configName = "Cascade";
+    private bool _simulate = true;
+    private bool _running;
+    private BenchmarkReport? _report;
+
+    private async Task RunBenchmark()
+    {
+        if (_running) return;
+        _running = true;
+        try
+        {
+            _report = await BenchmarkService.RunBenchmarkAsync(_configName, _simulate);
+        }
+        finally
+        {
+            _running = false;
+        }
+    }
+}

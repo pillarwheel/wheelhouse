@@ -5,6 +5,9 @@
 
 <PageTitle>WheelHouse — Settings</PageTitle>
 
+@inject IJSRuntime JS
+@inject ITranscriptExportService ExportService
+
 <header class="page-head">
     <div>
         <h1>Settings</h1>
@@ -53,6 +56,15 @@ else
     </section>
 
     <section class="panel">
+        <div class="panel-head"><h2>Export Fine-Tuning Datasets</h2></div>
+        <p class="muted small">Export successfully resolved task transcripts to standard SFT and DPO formats for LLM custom tuning.</p>
+        <div class="row" style="margin-top: 1rem; gap: 1rem;">
+            <button class="btn secondary" @onclick="ExportSft">Export SFT Dataset (JSONL)</button>
+            <button class="btn secondary" @onclick="ExportDpo">Export DPO Dataset (JSONL)</button>
+        </div>
+    </section>
+
+    <section class="panel">
         <div class="row">
             <button class="btn primary" @onclick="Save">Save &amp; apply</button>
             @if (_saved)
@@ -93,5 +105,17 @@ else
         _saved = true;
         // Force a full reload so the layout picks up the new branding immediately.
         Nav.NavigateTo("/settings", forceLoad: true);
+    }
+
+    private async Task ExportSft()
+    {
+        var jsonl = await ExportService.ExportSftJsonlAsync();
+        await JS.InvokeVoidAsync("wheelhouseDownload", "wheelhouse_sft.jsonl", jsonl);
+    }
+
+    private async Task ExportDpo()
+    {
+        var jsonl = await ExportService.ExportDpoJsonlAsync();
+        await JS.InvokeVoidAsync("wheelhouseDownload", "wheelhouse_dpo.jsonl", jsonl);
     }
 }

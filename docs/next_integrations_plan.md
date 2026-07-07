@@ -1,8 +1,9 @@
 # WheelHouse — Next Integrations & Development Plan
 
-*Drafted 2026-07-01. Companion to [architectural_suggestions.md](architectural_suggestions.md), which tracks
-the shipped milestones and the fine-grained backlog. This document is the forward-looking roadmap: what to
-integrate next, why it improves performance, and what unfinished work it depends on.*
+*Drafted 2026-07-01; Phase 2 added 2026-07-06 after the Recommendations A–F drop. Companion to
+[architectural_suggestions.md](architectural_suggestions.md), which tracks the shipped milestones
+and the fine-grained backlog. This document is the forward-looking roadmap: what to integrate
+next, why it improves performance, and what unfinished work it depends on.*
 
 ---
 
@@ -210,3 +211,109 @@ Sprint D (scale & ship):       3.7 worktree parallelism ✅ → Tier 4 packaging
 | Verification command portability | shell dialect implicit (PowerShell on Windows, bash elsewhere) | per-workspace shell declared in GitOps config |
 | Multi-task plan wall-clock | serial execution | parallel via git worktrees ✅ |
 | Run observability | end-of-run KPIs | live per-node tokens/duration + cost ✅ |
+
+---
+
+# Phase 2 — Hardening & closing the loop (post A–F assessment, 2026-07-06)
+
+The Recommendations A–F drop added six features (cost-cascade routing, fine-tuning exports, MCP
+policy + security audit, the Darwin evolutionary loop, multi-host exports, and the benchmark
+scorecard) with 15 tests (156 → 171, all green). Assessment: **B, C's auditor, and E are real and
+useful as shipped. A is real and now the *default* execution path but has two serious defects.
+D and F are UI + scaffolding whose engines are simulated and whose outputs nothing consumes.**
+Phase 2 is about fixing the defects and wiring the scaffolding to the real system.
+
+## P0 — Correctness & safety (fix before anything else)
+
+### 2.1 Cascade revert can destroy user work — ✅ Fixed (2026-07-07)
+`CascadeOrchestrationService` escalated by calling `DiscardChangesAsync` (= `git restore .`)
+across the whole workspace. That reverted **the user's own uncommitted tracked edits**, and did
+*not* remove untracked files the cheap tier created — wrong in both directions, in the default
+path (`SessionFlowResolver.DefaultOrchestrationKey` is now `"Cascade"`).
+- Fixed as planned: when the workspace is a git repo the cheap tier runs in an isolated linked
+  worktree (`AddWorktreeAsync`, same pattern as the parallel node) and is committed + merged back
+  only on verified success; on failure the worktree/branch are dropped and the workspace is never
+  touched. Outside a repo (or if worktree creation fails) every file `ApplyFileEdits` writes is
+  snapshotted first and exactly those files are restored/deleted on failure. `DiscardChangesAsync`
+  is no longer called. Covered by `CascadeOrchestrationServiceTests` (user's uncommitted edit
+  survives a failed cheap tier; worktree isolation/merge/cleanup in both outcomes).
+
+### 2.2 Path traversal in cheap-tier file writes — ✅ Fixed (2026-07-07)
+`ApplyFileEdits` wrote `Path.Combine(workingDirectory, <LLM-supplied path>)` unchecked — a
+`..\` path escaped the workspace.
+- Fixed as planned: `TryResolveWorkspacePath` canonicalizes with `Path.GetFullPath` and requires
+  the result to be under the workspace root; rooted paths and `..` escapes are rejected and
+  logged, on both the file-read (step 2) and file-write (`WriteActiveFile`) sides. Covered by a
+  `FILE: ../evil.txt` rejection test.
+
+## P1 — Wire the scaffolding to the real system
+
+### 2.3 Enforce `McpPolicy` — ✅ Shipped
+The policy file now has an engine at both enforcement points:
+- **Claude launcher**: `ClaudeCliService.RunAsync` loads the workspace policy and merges
+  `McpPolicyEnforcement.DisallowedToolsFor` into `--disallowedTools` — `AllowShell=false` denies
+  `Bash`, `AllowNetwork=false` denies `WebFetch`/`WebSearch` — and logs the denials to the run
+  console. (`DefaultDeny` remains the MCP server's inherent posture: unknown tools are rejected
+  by the JSON-RPC handler.)
+- **MCP server**: every `tools/call` is wrapped by `RunGovernedAsync` — per-call timeout
+  (`ToolTimeoutMs`), a rolling call budget (`MaxToolCallsPerTurn` per 60 s window via
+  `McpCallGate`, an honest approximation since MCP carries no turn boundary), and JSON-line
+  audit logging to `.wheelhouse/mcp-audit.log` when `AuditLog` is on.
+- Covered by `McpPolicyEnforcementTests` (mapping + gate) and two governed-call tests in
+  `WheelHouseMcpServerTests`. `McpPolicyService` became a singleton (stateless, file-based).
+
+### 2.4 Make the genome do something — ✅ Shipped
+All four genome fields now drive the harness:
+- `RagTopN` + `KeywordWeight` → `SessionView` loads the workspace genome before planning and
+  passes them into `IVectorSearchService.SearchAsync`, which gained a `keywordWeight` parameter
+  mapped onto weighted RRF (`SearchFusion` leg weights; 0.5 reproduces classic unweighted RRF
+  exactly).
+- `GeminiSystemPreamble` + `PlanningPromptTemplate` → flow through the planning `parameters`
+  bag (`GeminiPlanningService`) into a new `IGeminiService.GenerateResearchPlanAsync` overload
+  (added as a default interface method so existing implementations/fakes compile untouched).
+  The preamble is honored in both the inline path and the explicit context cache — the cache
+  key includes the preamble, so a mutated preamble can never hit a stale cached resource.
+- Crucial invariant: `HarnessGenome` defaults are now the **canonical full texts/values**
+  (`HarnessGenome.DefaultPreamble` / `DefaultPlanningTemplate`, referenced by `GeminiService`),
+  so an auto-created genome file changes nothing until Darwin actually mutates it — previously
+  the defaults were truncated one-liners that would have silently degraded planning.
+- Covered by `GenomeWiringTests`: weighted-fusion ranking, end-to-end KeywordWeight re-balancing,
+  parameters-bag mapping, and byte-identical requests for default-genome vs no-genome.
+
+### 2.5 Real benchmark execution (the `simulate` flag is ignored)
+`RunBenchmarkAsync` returns canned numbers for every config regardless of the toggle. Implement
+`simulate=false`: materialize each challenge in a temp sandbox repo (or worktree), run the actual
+orchestrator (`Cascade`/`ClaudeOnly`/`GeminiOnly`) with the challenge's verification command, and
+report real pass/duration/cost from `AgentUsage`. Gate behind the live-test env var pattern.
+
+### 2.6 Close the self-improvement loop
+With 2.4 + 2.5: replace `DarwinService.Evaluate`'s rule-based-plus-noise scoring with real
+benchmark runs of the mutated genome. That converts Darwin from a demo into the actual
+evolutionary harness the feature promises. (Keep the simulated scorer as the fast default.)
+
+## P2 — Quality & integration polish
+
+### 2.7 Ground the cascade's cheap tier in the RAG index
+The identify-files step asks Gemini blind. Use `IVectorSearchService.SearchAsync` (hybrid
+retrieval, shipped in Phase 1) to shortlist candidate files, and reuse Gemini context caching
+for the file-contents prompt. Also emit `AgentUsage` events from the cheap tier so cascade
+savings appear in the live telemetry and cost KPIs instead of being invisible.
+
+### 2.8 Cascade lacks an off switch
+Default flipped from `ClaudeCode` to `Cascade` with no setting. Add a workspace/app setting (and
+honor per-template `ServiceName`, which already works) so users can opt out of cheap-tier writes.
+
+### 2.9 Documentation & housekeeping
+README test count is kept current (190 as of 2.4), but A–F remain undocumented in the README
+feature list and `architectural_suggestions.md` should absorb the six features once hardened.
+The A–F work plus the Phase 2 hardening (2.1–2.4) is uncommitted — P0 has landed, so it can be
+committed now. The parser-consolidation background task (3.5) is still outstanding and now must
+merge around `CascadeOrchestrationService`'s new Gemini usage.
+
+## Suggested order
+
+```
+P0: 2.1 worktree-isolated cheap tier ✅ → 2.2 path containment ✅
+P1: 2.3 policy enforcement ✅ → 2.4 genome consumption ✅ → 2.5 real benchmarks → 2.6 Darwin fitness
+P2: 2.7 RAG-grounded cascade + usage events → 2.8 off switch → 2.9 docs + commit
+```

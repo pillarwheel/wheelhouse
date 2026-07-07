@@ -64,7 +64,7 @@ cd wheelhouse
 cp .env.example .env          # then fill in keys (see Configuration)
 
 dotnet build
-dotnet test                   # 156 offline tests
+dotnet test                   # 190 offline tests
 
 # Desktop app (native window):
 dotnet run --project src/WheelHouse.Desktop
@@ -133,7 +133,7 @@ Schema changes go through EF migrations (applied on startup), so updates never d
 
 ## Testing
 ```bash
-dotnet test                                   # 156 fast, offline tests
+dotnet test                                   # 190 fast, offline tests
 WHEELHOUSE_LIVE_TESTS=1 dotnet test           # also runs gated live API tests (needs keys/login)
 ```
 

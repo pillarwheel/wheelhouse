@@ -19,6 +19,20 @@ public interface IGeminiService
         string repositoryContext,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Genome-tunable planning: overrides for the system preamble and the planning instruction
+    /// block (see <see cref="Models.HarnessGenome"/>). Null/empty overrides fall back to the
+    /// canonical defaults. Default interface implementation ignores the overrides so existing
+    /// implementations keep working.
+    /// </summary>
+    Task<string> GenerateResearchPlanAsync(
+        string goal,
+        string repositoryContext,
+        string? systemPreamble,
+        string? planningTemplate,
+        CancellationToken cancellationToken = default)
+        => GenerateResearchPlanAsync(goal, repositoryContext, cancellationToken);
+
     /// <summary>Breaks a plan into ordered, verifiable task items.</summary>
     Task<IReadOnlyList<TaskItem>> GenerateTasksAsync(
         string plan,

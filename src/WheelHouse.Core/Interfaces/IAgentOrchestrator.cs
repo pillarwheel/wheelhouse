@@ -17,7 +17,8 @@ public record AgentRunRequest(
     string? ResumeSessionId = null,
     string? PermissionMode = null,
     IReadOnlyList<string>? AllowedTools = null,
-    IReadOnlyList<string>? DisallowedTools = null);
+    IReadOnlyList<string>? DisallowedTools = null,
+    string? VerificationCommand = null);
 
 /// <summary>
 /// Drives the Claude Code CLI subprocess and streams its output back as normalized events.

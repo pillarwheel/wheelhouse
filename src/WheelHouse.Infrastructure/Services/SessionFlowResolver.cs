@@ -13,7 +13,7 @@ namespace WheelHouse.Infrastructure.Services;
 public class SessionFlowResolver : ISessionFlowResolver
 {
     private const string DefaultPlanningKey = "Gemini";
-    private const string DefaultOrchestrationKey = "ClaudeCode";
+    private const string DefaultOrchestrationKey = "Cascade";
 
     private readonly IServiceProvider _services;
 

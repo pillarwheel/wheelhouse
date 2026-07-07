@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using WheelHouse.Core.Agents;
 using WheelHouse.Core.Interfaces;
+using WheelHouse.Core.Mcp;
 using WheelHouse.Infrastructure.Mcp;
 
 namespace WheelHouse.Infrastructure.Agents;
@@ -22,24 +23,35 @@ public class ClaudeCliService : IAgentOrchestrator
     private readonly HeadroomOptions _headroom;
     private readonly IVerificationRunner _verification;
     private readonly McpEndpointState _mcp;
+    private readonly IMcpPolicyService _policy;
     private ResolvedExe? _claude;
     private ResolvedExe? _headroomExe;
     private bool _claudeResolved, _headroomResolved;
 
     public ClaudeCliService(
         ILogger<ClaudeCliService> logger, HeadroomOptions headroom, IVerificationRunner verification,
-        McpEndpointState mcp)
+        McpEndpointState mcp, IMcpPolicyService policy)
     {
         _logger = logger;
         _headroom = headroom;
         _verification = verification;
         _mcp = mcp;
+        _policy = policy;
     }
 
     public async IAsyncEnumerable<AgentStreamEvent> RunAsync(
         AgentRunRequest request,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
+        // Enforce the workspace MCP policy at launch: capability switches (shell/network)
+        // become --disallowedTools so the policy file actually governs the agent.
+        var policy = await _policy.LoadPolicyAsync(request.WorkingDirectory, cancellationToken);
+        request = McpPolicyEnforcement.Apply(request, policy);
+        var denied = McpPolicyEnforcement.DisallowedToolsFor(policy);
+        if (denied.Count > 0)
+            yield return new AgentStreamEvent(AgentEventKind.System,
+                $"MCP policy: denying tools [{string.Join(", ", denied)}] (edit .wheelhouse/mcp-policy.json to change).");
+
         var mcpConfig = _mcp.Enabled ? _mcp.ConfigPath : null;
         var agentArgs = ClaudeCommand.BuildAgentArgs(request, mcpConfig, _mcp.AllowedToolNames);
 

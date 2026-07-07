@@ -145,7 +145,7 @@ public class VectorSearchService : IVectorSearchService
 
     public async Task<IReadOnlyList<CodeSearchResult>> SearchAsync(
         string query, int topN = 5, string? repositoryPath = null,
-        CancellationToken cancellationToken = default)
+        double keywordWeight = 0.5, CancellationToken cancellationToken = default)
     {
         // Hybrid retrieval: over-fetch both legs, then rank-fuse. Either leg alone still works —
         // keyword search covers exact identifiers (and machines with no embedding provider),
@@ -162,7 +162,13 @@ public class VectorSearchService : IVectorSearchService
 
         if (keyword.Count == 0) return semantic.Take(topN).ToList();
         if (semantic.Count == 0) return keyword.Take(topN).ToList();
-        return SearchFusion.ReciprocalRankFusion(semantic, keyword, topN);
+
+        // Map keywordWeight ∈ [0,1] onto leg weights so 0.5 reproduces classic unweighted RRF.
+        var kw = Math.Clamp(keywordWeight, 0.0, 1.0);
+        return SearchFusion.ReciprocalRankFusion(
+            semantic, keyword, topN,
+            semanticWeight: 2.0 * (1.0 - kw),
+            keywordWeight: 2.0 * kw);
     }
 
     private static IEnumerable<string> EnumerateSourceFiles(string root)

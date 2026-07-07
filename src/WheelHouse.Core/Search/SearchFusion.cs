@@ -12,28 +12,32 @@ public static class SearchFusion
 {
     public const int DefaultK = 60;
 
+    /// <param name="semanticWeight">Multiplier on the vector leg's rank contributions.</param>
+    /// <param name="keywordWeight">Multiplier on the keyword leg's rank contributions. Equal weights reproduce classic (unweighted) RRF ordering.</param>
     public static IReadOnlyList<CodeSearchResult> ReciprocalRankFusion(
         IReadOnlyList<CodeSearchResult> semantic,
         IReadOnlyList<CodeSearchResult> keyword,
         int topN,
-        int k = DefaultK)
+        int k = DefaultK,
+        double semanticWeight = 1.0,
+        double keywordWeight = 1.0)
     {
         var fused = new Dictionary<string, (CodeSearchResult First, double Score)>();
 
-        void Accumulate(IReadOnlyList<CodeSearchResult> list)
+        void Accumulate(IReadOnlyList<CodeSearchResult> list, double weight)
         {
             for (var rank = 0; rank < list.Count; rank++)
             {
                 var key = Key(list[rank].Entry);
-                var contribution = 1.0 / (k + rank + 1);
+                var contribution = weight / (k + rank + 1);
                 fused[key] = fused.TryGetValue(key, out var cur)
                     ? (cur.First, cur.Score + contribution)
                     : (list[rank], contribution);
             }
         }
 
-        Accumulate(semantic);
-        Accumulate(keyword);
+        Accumulate(semantic, semanticWeight);
+        Accumulate(keyword, keywordWeight);
 
         return fused.Values
             .OrderByDescending(v => v.Score)

@@ -163,6 +163,7 @@ public class WheelHouseMcpServerTests : IDisposable
         services.AddSingleton<ICodeCompressionService, CodeCompressionService>();
         services.AddScoped<IVectorStore, CosineVectorStore>();
         services.AddScoped<IVectorSearchService, VectorSearchService>();
+        services.AddSingleton<IMcpPolicyService, McpPolicyService>();
         services.AddLogging();
         _provider = services.BuildServiceProvider();
 
@@ -203,6 +204,44 @@ public class WheelHouseMcpServerTests : IDisposable
 
         var text = res.GetProperty("result").GetProperty("content")[0].GetProperty("text").GetString()!;
         Assert.Contains("Always use EF migrations.", text);
+    }
+
+    [Fact]
+    public async Task Policy_Call_Budget_Denies_Calls_Over_The_Rolling_Window()
+    {
+        Directory.CreateDirectory(Path.Combine(_repo, ".wheelhouse"));
+        await File.WriteAllTextAsync(Path.Combine(_repo, ".wheelhouse", "mcp-policy.json"),
+            """{"defaultDeny":true,"allowNetwork":false,"allowShell":false,"toolTimeoutMs":30000,"maxToolCallsPerTurn":2,"auditLog":false}""");
+
+        var mcp = new WheelHouseMcpServer(_provider.GetRequiredService<IServiceScopeFactory>());
+        string TextOf(string? json) => JsonDocument.Parse(json!).RootElement
+            .GetProperty("result").GetProperty("content")[0].GetProperty("text").GetString()!;
+
+        var first = TextOf(await mcp.HandleAsync(ToolCall(1, "get_knowledge", new { repository = _repo })));
+        var second = TextOf(await mcp.HandleAsync(ToolCall(2, "get_knowledge", new { repository = _repo })));
+        var third = TextOf(await mcp.HandleAsync(ToolCall(3, "get_knowledge", new { repository = _repo })));
+
+        Assert.DoesNotContain("Denied by MCP policy", first);
+        Assert.DoesNotContain("Denied by MCP policy", second);
+        Assert.Contains("Denied by MCP policy", third);
+    }
+
+    [Fact]
+    public async Task Policy_Audit_Log_Records_Tool_Calls()
+    {
+        Directory.CreateDirectory(Path.Combine(_repo, ".wheelhouse"));
+        await File.WriteAllTextAsync(Path.Combine(_repo, ".wheelhouse", "mcp-policy.json"),
+            """{"defaultDeny":true,"allowNetwork":false,"allowShell":false,"toolTimeoutMs":30000,"maxToolCallsPerTurn":8,"auditLog":true}""");
+
+        var mcp = new WheelHouseMcpServer(_provider.GetRequiredService<IServiceScopeFactory>());
+        await mcp.HandleAsync(ToolCall(1, "get_knowledge", new { repository = _repo }));
+
+        var auditPath = Path.Combine(_repo, ".wheelhouse", "mcp-audit.log");
+        Assert.True(File.Exists(auditPath));
+        var line = (await File.ReadAllLinesAsync(auditPath)).Single();
+        var entry = JsonDocument.Parse(line).RootElement;
+        Assert.Equal("get_knowledge", entry.GetProperty("tool").GetString());
+        Assert.True(entry.GetProperty("ok").GetBoolean());
     }
 
     private static string ToolCall(int id, string tool, object arguments) =>

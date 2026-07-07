@@ -56,6 +56,12 @@ public static class DependencyInjection
         services.AddScoped<IPromptTemplateService, PromptTemplateService>();
         services.AddScoped<ITranscriptSearch, TranscriptSearchService>();
         services.AddScoped<IAppSettingsService, AppSettingsService>();
+        services.AddScoped<ITranscriptExportService, TranscriptExportService>();
+        // Singleton: stateless + file-based, and consumed by the singleton ClaudeCliService.
+        services.AddSingleton<IMcpPolicyService, McpPolicyService>();
+        services.AddScoped<IDarwinService, DarwinService>();
+        services.AddScoped<IHostIntegrationService, HostIntegrationService>();
+        services.AddScoped<IBenchmarkService, BenchmarkService>();
         services.AddSingleton<IVerificationRunner, PowerShellVerificationRunner>();
         services.AddSingleton<IGitService, GitService>();
         services.AddSingleton<IWorkspaceIndexQueue, WorkspaceIndexQueue>();
@@ -67,6 +73,7 @@ public static class DependencyInjection
         // Template-driven flow: keyed implementations + resolver
         services.AddKeyedScoped<IPlanningService, GeminiPlanningService>("Gemini");
         services.AddKeyedSingleton<ITaskOrchestrationService, AgentOrchestratorService>("ClaudeCode");
+        services.AddKeyedScoped<ITaskOrchestrationService, CascadeOrchestrationService>("Cascade");
         services.AddScoped<ISessionFlowResolver, SessionFlowResolver>();
 
         // Visual-scripting engine: executes a SessionTemplate's node graph.

@@ -1,0 +1,129 @@
+@page "/darwin/{WorkspaceId:int}"
+@inject IDbContextFactory<WheelHouseDbContext> DbFactory
+@inject WheelHouse.Core.Interfaces.IDarwinService DarwinService
+@inject NavigationManager Nav
+
+<PageTitle>WheelHouse — Darwin Harness Evolution</PageTitle>
+
+@if (_workspace is null)
+{
+    <div class="empty-state"><h1>Workspace not found</h1><a href="/">Back to dashboard</a></div>
+}
+else
+{
+    <header class="page-head">
+        <div>
+            <h1>Darwin Mode: @_workspace.Name</h1>
+            <p class="muted">Evolve prompt configs and RAG parameters automatically. Mutate configuration, evaluate in a local sandbox, and select improvements.</p>
+        </div>
+        <a class="btn ghost" href="/workspace/@WorkspaceId">Back to Workspace Settings</a>
+    </header>
+
+    <section class="grid two-col">
+        <div class="panel">
+            <div class="panel-head"><h2>Active Config Genome</h2></div>
+            @if (_genome is not null)
+            {
+                <label class="field">
+                    <span class="field-name">RAG Search Limits (Top N)</span>
+                    <input class="input" type="number" readonly value="@_genome.RagTopN" />
+                </label>
+                <label class="field">
+                    <span class="field-name">Keyword Weight (versus Semantic)</span>
+                    <input class="input" type="number" readonly value="@_genome.KeywordWeight" />
+                </label>
+                <label class="field">
+                    <span class="field-name">Gemini System Preamble</span>
+                    <textarea class="input" style="height: 100px;" readonly>@_genome.GeminiSystemPreamble</textarea>
+                </label>
+                <label class="field">
+                    <span class="field-name">Planning Prompt Template</span>
+                    <textarea class="input" style="height: 80px;" readonly>@_genome.PlanningPromptTemplate</textarea>
+                </label>
+            }
+            else
+            {
+                <p class="muted">Loading genome...</p>
+            }
+        </div>
+
+        <div class="panel">
+            <div class="panel-head"><h2>Evolution Sandbox Control</h2></div>
+            <p class="muted">Run evolutionary generations to mutate the parameters. Each generation runs a local sandbox task evaluation suite.</p>
+            
+            <div class="row" style="margin-top: 1rem; gap: 1rem; align-items: center;">
+                <button class="btn primary" @onclick="RunGeneration" disabled="@_running">
+                    @(_running ? "Evaluating sandbox..." : "Run Evolution Generation")
+                </button>
+                <label style="display: flex; gap: 0.5rem; align-items: center; font-size: 0.9em;">
+                    <input type="checkbox" @bind="_simulate" />
+                    Simulated Sandbox (Offline-Safe)
+                </label>
+            </div>
+
+            @if (_results.Count > 0)
+            {
+                <div style="margin-top: 1.5rem;">
+                    <h3>Evolution Log</h3>
+                    <ul class="card-list" style="margin-top: 0.5rem; max-height: 350px; overflow-y: auto;">
+                        @foreach (var res in _results)
+                        {
+                            <li class="card" style="border-left: 4px solid @(res.IsImprovement ? "var(--accent-color)" : "var(--border-color)"); padding: 1rem;">
+                                <div class="card-main">
+                                    <div style="display: flex; justify-content: space-between;">
+                                        <strong style="color: @(res.IsImprovement ? "var(--accent-color)" : "var(--text-color)");">
+                                            Generation @res.Generation — @(res.IsImprovement ? "IMPROVEMENT ACCEPTED" : "NO IMPROVEMENT")
+                                        </strong>
+                                        <span class="muted">Score: @res.Score.ToString("0.0")</span>
+                                    </div>
+                                    <div class="muted small" style="margin-top: 0.2rem; font-size: 0.85em;">
+                                        Passed: @res.TasksPassed / @res.TasksTotal sandbox tasks.
+                                        TopN: @res.Genome.RagTopN, Weight: @res.Genome.KeywordWeight.ToString("0.00")
+                                    </div>
+                                </div>
+                            </li>
+                        }
+                    </ul>
+                </div>
+            }
+        </div>
+    </section>
+}
+
+@code {
+    [Parameter] public int WorkspaceId { get; set; }
+
+    private Workspace? _workspace;
+    private HarnessGenome? _genome;
+    private List<EvolutionGenerationResult> _results = new();
+    private bool _running;
+    private bool _simulate = true;
+    private int _genCount = 0;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        _workspace = await db.Workspaces.FindAsync(WorkspaceId);
+        if (_workspace is not null)
+        {
+            _genome = await DarwinService.LoadGenomeAsync(_workspace.AbsolutePath);
+        }
+    }
+
+    private async Task RunGeneration()
+    {
+        if (_workspace is null || _running) return;
+        _running = true;
+        try
+        {
+            _genCount++;
+            var res = await DarwinService.EvolveGenerationAsync(_workspace.AbsolutePath, _genCount, _simulate);
+            _results.Insert(0, res);
+            _genome = res.Genome; // Update UI values with the winner
+        }
+        finally
+        {
+            _running = false;
+        }
+    }
+}

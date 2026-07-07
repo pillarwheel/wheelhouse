@@ -20,7 +20,14 @@ public class GeminiPlanningService : IPlanningService
         string repositoryContext,
         Dictionary<string, string>? parameters = null,
         CancellationToken cancellationToken = default)
-        => _gemini.GenerateResearchPlanAsync(goal, repositoryContext, cancellationToken);
+        // Genome-tunable planning: the caller (which knows the workspace) can pass the Darwin
+        // genome's preamble/template through the parameters bag; absent keys fall back to the
+        // canonical defaults inside GeminiService.
+        => _gemini.GenerateResearchPlanAsync(
+            goal, repositoryContext,
+            parameters?.GetValueOrDefault("systemPreamble"),
+            parameters?.GetValueOrDefault("planningTemplate"),
+            cancellationToken);
 
     public Task<IReadOnlyList<TaskItem>> GenerateTasksAsync(
         string plan,

@@ -2,6 +2,9 @@
 @inject IDbContextFactory<WheelHouseDbContext> DbFactory
 @inject WheelHouse.Infrastructure.Services.WorkspaceConfigService ConfigService
 @inject NavigationManager Nav
+@inject WheelHouse.Core.Interfaces.IMcpPolicyService PolicyService
+@inject WheelHouse.Core.Interfaces.IHostIntegrationService HostIntegrationService
+@inject WheelHouse.Infrastructure.Mcp.McpEndpointState McpState
 
 <PageTitle>WheelHouse — Workspace Settings</PageTitle>
 
@@ -16,7 +19,10 @@ else
             <h1>@_workspace.Name</h1>
             <p class="muted mono">@_workspace.AbsolutePath</p>
         </div>
-        <button class="btn ghost" @onclick="SyncYaml">Sync .wheelhouse/config.yaml</button>
+        <div style="display: flex; gap: 0.5rem;">
+            <a class="btn ghost" href="/darwin/@Id">Darwin Mode (Self-Evolve)</a>
+            <button class="btn ghost" @onclick="SyncYaml">Sync .wheelhouse/config.yaml</button>
+        </div>
     </header>
 
     <section class="grid two-col">
@@ -94,6 +100,109 @@ else
             </div>
         </div>
     </section>
+
+    <section class="grid two-col" style="margin-top: 2rem;">
+        <div class="panel">
+            <div class="panel-head"><h2>MCP Tool Policy</h2></div>
+            <p class="muted">Tool access policy configured in <code>.wheelhouse/mcp-policy.json</code>.</p>
+            @if (_policy is not null)
+            {
+                <label class="field">
+                    <span class="field-name">Default Deny</span>
+                    <input type="checkbox" @bind="_policy.DefaultDeny" />
+                </label>
+                <label class="field">
+                    <span class="field-name">Allow Network</span>
+                    <input type="checkbox" @bind="_policy.AllowNetwork" />
+                </label>
+                <label class="field">
+                    <span class="field-name">Allow Shell</span>
+                    <input type="checkbox" @bind="_policy.AllowShell" />
+                </label>
+                <label class="field">
+                    <span class="field-name">Tool Timeout (ms)</span>
+                    <input type="number" class="input" @bind="_policy.ToolTimeoutMs" />
+                </label>
+                <label class="field">
+                    <span class="field-name">Max Tool Calls Per Turn</span>
+                    <input type="number" class="input" @bind="_policy.MaxToolCallsPerTurn" />
+                </label>
+                <div class="row" style="margin-top: 1rem;">
+                    <button class="btn primary" @onclick="SavePolicy">Save Policy</button>
+                    @if (_savedPolicy)
+                    {
+                        <span class="tag">saved</span>
+                    }
+                </div>
+            }
+        </div>
+
+        <div class="panel">
+            <div class="panel-head">
+                <h2>Security Audit Scanner</h2>
+                @if (_warnings.Count > 0)
+                {
+                    <span class="pill warn">@_warnings.Count Warnings</span>
+                }
+                else
+                {
+                    <span class="pill success">Clean</span>
+                }
+            </div>
+            
+            @if (_warnings.Count == 0)
+            {
+                <div class="alert success" style="margin-top: 1rem; padding: 1rem; border-radius: var(--border-radius); background: color-mix(in srgb, var(--surface-3) 90%, transparent); border: 1px solid var(--border-color);">
+                    <strong>Safe!</strong> No dangerous auto-approval command rules detected.
+                </div>
+            }
+            else
+            {
+                <ul class="card-list" style="margin-top: 1rem;">
+                    @foreach (var w in _warnings)
+                    {
+                        <li class="card" style="border-left: 4px solid var(--accent-color); padding: 1rem;">
+                            <div class="card-main">
+                                <div class="card-title mono" style="color: var(--accent-color); font-weight: bold;">[@w.Severity] Pattern: @w.RulePattern</div>
+                                <div style="margin-top: 0.3rem; font-size: 0.9em; color: var(--text-color);">@w.Message</div>
+                                <div class="muted small" style="margin-top: 0.2rem; font-size: 0.8em; color: var(--text-color-light);">Recommendation: @w.Recommendation</div>
+                            </div>
+                        </li>
+                    }
+                </ul>
+            }
+        </div>
+    </section>
+
+    <section class="panel" style="margin-top: 2rem;">
+        <div class="panel-head"><h2>Multi-Host Integration</h2></div>
+        <p class="muted">Export this workspace's live MCP endpoints and verification pipelines to other developer hosts.</p>
+        <div class="row" style="margin-top: 1rem; gap: 1rem; flex-wrap: wrap;">
+            <div>
+                <button class="btn secondary" @onclick="ExportVsCode" disabled="@(!McpState.Enabled)">
+                    Export VSCode Copilot Settings
+                </button>
+                @if (_savedVsCode) { <span class="tag" style="margin-left: 0.5rem;">saved</span> }
+            </div>
+            <div>
+                <button class="btn secondary" @onclick="ExportClaudeDesktop" disabled="@(!McpState.Enabled)">
+                    Export Claude Desktop Config
+                </button>
+                @if (_savedClaude) { <span class="tag" style="margin-left: 0.5rem;">saved</span> }
+            </div>
+            <div>
+                <button class="btn secondary" @onclick="ExportGitHubActions">
+                    Export GitHub Actions Workflow
+                </button>
+                @if (_savedGitHub) { <span class="tag" style="margin-left: 0.5rem;">saved</span> }
+            </div>
+        </div>
+        <p class="muted small" style="margin-top: 0.5rem;">
+            * VSCode settings are merged directly into <code>.vscode/settings.json</code>.<br />
+            * Claude Desktop config is saved to <code>.wheelhouse/claude_desktop_config.json</code> for manual merging.<br />
+            * GitHub Actions workflow is saved to <code>.github/workflows/wheelhouse-verify.yml</code>.
+        </p>
+    </section>
 }
 
 @code {
@@ -105,6 +214,14 @@ else
     private RuleMatchType _newMatch = RuleMatchType.Prefix;
     private RuleAction _newAction = RuleAction.AutoApprove;
     private bool _savedMode;
+    
+    private McpPolicy? _policy;
+    private List<SecurityWarning> _warnings = new();
+    private bool _savedPolicy;
+
+    private bool _savedVsCode;
+    private bool _savedClaude;
+    private bool _savedGitHub;
 
     protected override async Task OnInitializedAsync() => await Load();
 
@@ -116,6 +233,12 @@ else
             _workspace.PermissionMode = "acceptEdits";
         _rules = await db.CommandRules.Where(r => r.WorkspaceId == Id)
             .OrderBy(r => r.Pattern).ToListAsync();
+
+        if (_workspace is not null)
+        {
+            _policy = await PolicyService.LoadPolicyAsync(_workspace.AbsolutePath);
+            _warnings = PolicyService.AuditRules(_rules);
+        }
     }
 
     private async Task SavePermissionMode()
@@ -129,6 +252,13 @@ else
             await db.SaveChangesAsync();
             _savedMode = true;
         }
+    }
+
+    private async Task SavePolicy()
+    {
+        if (_workspace is null || _policy is null) return;
+        await PolicyService.SavePolicyAsync(_workspace.AbsolutePath, _policy);
+        _savedPolicy = true;
     }
 
     private async Task AddRule()
@@ -161,5 +291,28 @@ else
         await using var db = await DbFactory.CreateDbContextAsync();
         var ws = await db.Workspaces.Include(w => w.CommandRules).FirstOrDefaultAsync(w => w.Id == Id);
         if (ws is not null) await ConfigService.WriteAsync(ws);
+    }
+
+    private async Task ExportVsCode()
+    {
+        if (_workspace is null) return;
+        var url = McpState.Url ?? "http://localhost:5000/mcp";
+        await HostIntegrationService.ExportVsCodeSettingsAsync(_workspace.AbsolutePath, url);
+        _savedVsCode = true;
+    }
+
+    private async Task ExportClaudeDesktop()
+    {
+        if (_workspace is null) return;
+        var url = McpState.Url ?? "http://localhost:5000/mcp";
+        await HostIntegrationService.ExportClaudeDesktopConfigAsync(_workspace.AbsolutePath, url);
+        _savedClaude = true;
+    }
+
+    private async Task ExportGitHubActions()
+    {
+        if (_workspace is null) return;
+        await HostIntegrationService.ExportGitHubActionsWorkflowAsync(_workspace.AbsolutePath, "dotnet test");
+        _savedGitHub = true;
     }
 }
